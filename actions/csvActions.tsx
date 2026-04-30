@@ -793,11 +793,13 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
       ? (isStandard ? 'GA_STANDARD' : 'GA_RESALE')
       : (isStandard ? 'STANDARD' : 'RESALE');
     const RESERVED_TAGS = new Set(['STANDARD', 'RESALE', 'GA_STANDARD', 'GA_RESALE']);
+    // Prefer specific inventory tags (e.g. "RESALE BROKER") over the generic base.
+    // Tags are emitted uppercased; fall back to the base tag when none are present.
     const extraTags = (inventory?.tags || '')
       .split(',')
-      .map(t => t.trim())
-      .filter(t => t.length > 0 && !RESERVED_TAGS.has(t.toUpperCase()));
-    const tags = [baseTag, ...extraTags].join(',');
+      .map(t => t.trim().toUpperCase())
+      .filter(t => t.length > 0 && !RESERVED_TAGS.has(t));
+    const tags = extraTags.length > 0 ? extraTags.join(',') : baseTag;
 
     return {
       inventory_id: inventory?.inventoryId || 0,
