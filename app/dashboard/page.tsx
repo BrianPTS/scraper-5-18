@@ -222,6 +222,7 @@ export default function DashboardPage() {
         // Ping the auto-delete API route to ensure the scheduler is initialized
         // (the scheduler starts via module-level init when the route is first loaded)
         fetch('/api/auto-delete').catch(() => {});
+        fetch('/api/inventory-watcher').catch(() => {});
 
         const [settings, preview] = await Promise.all([
           getAutoDeleteSettings(),

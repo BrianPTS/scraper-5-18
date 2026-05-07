@@ -256,6 +256,8 @@ const consecutiveGroupSchema = new mongoose.Schema(
   }
 );
 
+consecutiveGroupSchema.index({ event_date: 1, updatedAt: 1 });
+
 export const ConsecutiveGroup = mongoose.models.ConsecutiveGroup || mongoose.model(
   "ConsecutiveGroup",
   consecutiveGroupSchema

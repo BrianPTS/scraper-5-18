@@ -19,6 +19,7 @@ import {
   Shield,
   BarChart3,
   Users,
+  Bell,
 } from 'lucide-react';
 
 interface FeatureFlags {
@@ -149,6 +150,11 @@ const DashboardLayout = ({ children }: { children: React.ReactNode }) => {
       label: 'Export CSV',
       icon: <Download className="w-5 h-5" />,
       flagKey: 'exportCsv' as keyof FeatureFlags,
+    },
+    {
+      path: '/dashboard/inventory-watcher',
+      label: 'Inventory Alerts',
+      icon: <Bell className="w-5 h-5" />,
     },
   ];
 
