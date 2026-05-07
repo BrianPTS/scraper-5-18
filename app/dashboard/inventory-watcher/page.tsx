@@ -48,6 +48,12 @@ interface WatcherStatus {
   droppedAlerts: number;
   minDropPct: number;
   minDropAbs: number;
+  cooldownEvents: number;
+  cooldownSuppressed: number;
+  cooldownThreshold: number;
+  cooldownWindowMs: number;
+  sendGapMs: number;
+  linesPerMessage: number;
 }
 
 const TYPE_META: Record<AlertType, { label: string; emoji: string; color: string }> = {
@@ -90,6 +96,12 @@ export default function InventoryWatcherPage() {
         droppedAlerts: Number(data.droppedAlerts) || 0,
         minDropPct: Number(data.minDropPct) || 0,
         minDropAbs: Number(data.minDropAbs) || 0,
+        cooldownEvents: Number(data.cooldownEvents) || 0,
+        cooldownSuppressed: Number(data.cooldownSuppressed) || 0,
+        cooldownThreshold: Number(data.cooldownThreshold) || 0,
+        cooldownWindowMs: Number(data.cooldownWindowMs) || 0,
+        sendGapMs: Number(data.sendGapMs) || 0,
+        linesPerMessage: Number(data.linesPerMessage) || 0,
       });
       setError(null);
     } catch (e) {
@@ -355,27 +367,54 @@ function SchedulerCard({ status, now }: { status: WatcherStatus; now: number }) 
 // Live snapshot of pending queue + dropped counter — useful when alerts are in flight.
 function LiveActivityRow({ status }: { status: WatcherStatus }) {
   const queued = status.pendingCounts.drops + status.pendingCounts.undercuts + status.pendingCounts.newStd;
+  const throughputPerMin = status.sendGapMs > 0
+    ? Math.round((60_000 / status.sendGapMs) * status.linesPerMessage)
+    : 0;
+  const cooldownMin = Math.round(status.cooldownWindowMs / 60_000);
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <h2 className="text-sm font-semibold text-slate-700">Live activity</h2>
-        <span className="text-xs text-slate-400">
-          Min drop ≥ {Math.round(status.minDropPct * 100)}% &amp; ≥ ${status.minDropAbs} · Undercut ≥ {Math.round(status.undercutPct * 100)}%
-        </span>
+        <div className="flex items-center gap-3 flex-wrap text-xs text-slate-400">
+          <span>
+            Min drop ≥ <span className="font-semibold text-slate-600">{Math.round(status.minDropPct * 100)}%</span> &amp; ≥ <span className="font-semibold text-slate-600">${status.minDropAbs}</span>
+          </span>
+          <span>·</span>
+          <span>Undercut ≥ <span className="font-semibold text-slate-600">{Math.round(status.undercutPct * 100)}%</span></span>
+          <span>·</span>
+          <span>Throughput <span className="font-semibold text-slate-600">~{throughputPerMin}/min</span></span>
+          <span>·</span>
+          <span>Cooldown <span className="font-semibold text-slate-600">{status.cooldownThreshold}/{cooldownMin}m</span></span>
+        </div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <QueueCard label="Pending in queue" value={queued} accent="text-purple-700" sub={
-          queued
-            ? `🔴 ${status.pendingCounts.drops} · 🟡 ${status.pendingCounts.undercuts} · 🟢 ${status.pendingCounts.newStd}`
-            : 'queue empty'
-        }/>
-        <QueueCard label="🔴 Drops queued" value={status.pendingCounts.drops} accent="text-red-700" />
-        <QueueCard label="🟡 Undercuts queued" value={status.pendingCounts.undercuts} accent="text-yellow-700" />
+        <QueueCard
+          label="Pending in queue"
+          value={queued}
+          accent="text-purple-700"
+          sub={
+            queued
+              ? `🔴 ${status.pendingCounts.drops} · 🟡 ${status.pendingCounts.undercuts} · 🟢 ${status.pendingCounts.newStd}`
+              : 'queue empty'
+          }
+        />
+        <QueueCard
+          label="🥶 Events in cooldown"
+          value={status.cooldownEvents}
+          accent={status.cooldownEvents > 0 ? 'text-blue-700' : 'text-slate-400'}
+          sub={status.cooldownEvents > 0 ? `${status.cooldownThreshold}+ alerts in last ${cooldownMin}m` : 'none active'}
+        />
+        <QueueCard
+          label="Suppressed (cooldown)"
+          value={status.cooldownSuppressed}
+          accent={status.cooldownSuppressed > 0 ? 'text-blue-600' : 'text-slate-400'}
+          sub="lifetime · noise from busy events"
+        />
         <QueueCard
           label="Dropped (cap)"
           value={status.droppedAlerts}
           accent={status.droppedAlerts > 0 ? 'text-red-600' : 'text-slate-400'}
-          sub={status.droppedAlerts > 0 ? 'pending cap reached at some point' : 'no losses'}
+          sub={status.droppedAlerts > 0 ? 'lowest-priority dropped at queue cap' : 'no losses'}
         />
       </div>
     </div>
