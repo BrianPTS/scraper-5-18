@@ -204,7 +204,7 @@ export default function InventoryWatcherPage() {
         <StatusCard label="Snapshot rows" value={status.snapshotSize.toLocaleString()} ok={status.snapshotSize > 0} />
       </div>
 
-      <LiveActivityRow status={status} now={now} />
+      <LiveActivityRow status={status} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl border border-slate-200 p-5">
@@ -353,7 +353,7 @@ function SchedulerCard({ status, now }: { status: WatcherStatus; now: number }) 
 }
 
 // Live snapshot of pending queue + dropped counter — useful when alerts are in flight.
-function LiveActivityRow({ status, now: _now }: { status: WatcherStatus; now: number }) {
+function LiveActivityRow({ status }: { status: WatcherStatus }) {
   const queued = status.pendingCounts.drops + status.pendingCounts.undercuts + status.pendingCounts.newStd;
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
