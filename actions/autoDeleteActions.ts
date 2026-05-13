@@ -23,7 +23,6 @@
 import dbConnect from '@/lib/dbConnect';
 import { Event } from '@/models/eventModel';
 import { ConsecutiveGroup } from '@/models/seatModel';
-import { StubHubListing } from '@/models/stubhubListingModel';
 import { deleteConsecutiveGroupsByEventIds } from './seatActions';
 import { createErrorLog } from './errorLogActions';
 import { shouldStopEvent, shouldStopEventAsync, detectTimezoneFromVenue, detectTimezoneFromVenueAsync, getTimezoneAbbr, getCurrentTimeInTimezone } from '@/lib/timezone';
@@ -540,17 +539,7 @@ export async function deletePassedEvents(hoursAfter: number = 12): Promise<PostE
       console.error('Post-event cleanup:', msg);
     }
 
-    // 2. Delete StubHub listings
-    try {
-      const shResult = await StubHubListing.deleteMany({ eventId: { $in: eventIds } });
-      console.log(`Post-event cleanup: Deleted ${shResult.deletedCount} StubHub listings`);
-    } catch (err) {
-      const msg = `Failed to delete StubHub listings: ${(err as Error).message}`;
-      stats.errors.push(msg);
-      console.error('Post-event cleanup:', msg);
-    }
-
-    // 3. Delete Event documents (last — so retries are safe if above fail)
+    // 2. Delete Event documents (last — so retries are safe if above fail)
     try {
       const evResult = await Event.deleteMany({ _id: { $in: mongoIds } });
       stats.deleted = evResult.deletedCount;

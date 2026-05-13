@@ -34,7 +34,7 @@ export async function PUT(req: NextRequest) {
     // Only allow valid state values for known fields
     const allowedFields = [
       'events', 'inventory', 'exclusionRules', 'importEvents', 'addEvent',
-      'orders', 'exportCsv', 'marketIntelligence', 'purchaseAccounts',
+      'orders', 'exportCsv', 'purchaseAccounts',
       'csvScheduler', 'csvManualExport', 'csvDownload',
       'minSeatFilter', 'lowSeatAutoStop', 'eventEdit', 'eventExclusions',
       'autoDelete', 'proxies',

@@ -204,51 +204,6 @@ const consecutiveGroupSchema = new mongoose.Schema(
         type: String,
       },
       tickets: [ticketSchema],
-      // StubHub auto-pricing fields (written by external scraper via bulkWrite)
-      stubhubSuggestedPrice: {
-        type: Number,
-        default: null,
-      },
-      stubhubSectionLowest: {
-        type: Number,
-        default: null,
-      },
-      stubhubAtFloor: {
-        type: Boolean,
-        default: false,
-      },
-      stubhubPricedAt: {
-        type: Date,
-        default: null,
-      },
-      stubhubSectionAvg: {
-        type: Number,
-        default: null,
-      },
-      stubhubDealZonePrice: {
-        type: Number,
-        default: null,
-      },
-      stubhubBadgeAchievable: {
-        type: Boolean,
-        default: false,
-      },
-      stubhubFloorPrice: {
-        type: Number,
-        default: null,
-      },
-      stubhubSoftFloor: {
-        type: Number,
-        default: null,
-      },
-      stubhubSectionHighest: {
-        type: Number,
-        default: null,
-      },
-      stubhubSectionCount: {
-        type: Number,
-        default: null,
-      },
     },
   },
   {

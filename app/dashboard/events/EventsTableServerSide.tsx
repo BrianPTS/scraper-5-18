@@ -30,7 +30,6 @@ interface EventData {
   resaleRows?: number;
   includeStandardSeats?: boolean;
   includeResaleSeats?: boolean;
-  stubhubEnabled?: boolean;
   eventType?: 'NFL' | 'MLB' | 'NHL' | 'NBA' | 'MLS' | 'Other' | null;
 }
 
@@ -446,7 +445,6 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                           eventId={event._id}
                           eventName={event.Event_Name}
                           isScrapingActive={isActive}
-                          stubhubEnabled={event.stubhubEnabled ?? true}
                         />
                       </td>
                     </tr>
@@ -494,7 +492,6 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                         eventId={event._id}
                         eventName={event.Event_Name}
                         isScrapingActive={isActive}
-                        stubhubEnabled={event.stubhubEnabled ?? true}
                         compact
                       />
                     </div>

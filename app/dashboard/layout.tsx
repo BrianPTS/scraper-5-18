@@ -17,7 +17,6 @@ import {
   Filter,
   Search,
   Shield,
-  BarChart3,
   Users,
   Bell,
 } from 'lucide-react';
@@ -30,7 +29,6 @@ interface FeatureFlags {
   addEvent: string;
   orders: string;
   exportCsv: string;
-  marketIntelligence: string;
   purchaseAccounts: string;
   proxies: string;
 }
@@ -38,7 +36,7 @@ interface FeatureFlags {
 const DEFAULT_FLAGS: FeatureFlags = {
   events: 'enabled', inventory: 'enabled', exclusionRules: 'enabled', importEvents: 'enabled',
   addEvent: 'enabled', orders: 'enabled', exportCsv: 'enabled',
-  marketIntelligence: 'enabled', purchaseAccounts: 'enabled', proxies: 'disabled',
+  purchaseAccounts: 'enabled', proxies: 'disabled',
 };
 
 /** Normalize legacy booleans from DB */
@@ -138,12 +136,6 @@ const DashboardLayout = ({ children }: { children: React.ReactNode }) => {
       label: 'Accounts',
       icon: <Users className="w-5 h-5" />,
       flagKey: 'purchaseAccounts' as keyof FeatureFlags,
-    },
-    {
-      path: '/dashboard/stubhub',
-      label: 'Market Intelligence',
-      icon: <BarChart3 className="w-5 h-5" />,
-      flagKey: 'marketIntelligence' as keyof FeatureFlags,
     },
     {
       path: '/dashboard/export-csv',

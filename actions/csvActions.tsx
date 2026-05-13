@@ -253,11 +253,7 @@ async function withRetry<T>(
 const _venueTzCache = new Map<string, string | null>();
 
 // Shared Mongo projection for CSV chunk fetches. Only includes fields the row
-// mapper actually reads — six previously-projected fields were unused
-// (inventory.notes, inventory.in_hand, inventory.files_available,
-// inventory.stubhubAtFloor, inventory.stubhubPricedAt,
-// inventory.stubhubSectionLowest). Pruning them shrinks every chunk's BSON
-// payload and parse cost.
+// mapper actually reads.
 const CSV_PROJECTION = {
   'inventory.inventoryId': 1,
   'event_name': 1,
@@ -285,7 +281,6 @@ const CSV_PROJECTION = {
   'inventory.zone': 1,
   'inventory.shown_quantity': 1,
   'inventory.passthrough': 1,
-  'inventory.stubhubSuggestedPrice': 1,
 } as const;
 
 // ── Global: stop events with seats <= threshold & clear their inventory ──
@@ -423,13 +418,12 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
       // running $lookup per chunk. This is the single biggest speed-up.
       const eventDetailsMap = new Map<string, {
         url: string; stdAdj: number; resaleAdj: number; defaultPct: number;
-        includeStandard: boolean; includeResale: boolean; useStubHubPricing: boolean;
+        includeStandard: boolean; includeResale: boolean;
       }>();
       const eventDocs = await Event.find(
         { mapping_id: { $in: eventMappingIds } },
         { mapping_id: 1, URL: 1, standardMarkupAdjustment: 1, resaleMarkupAdjustment: 1,
-          priceIncreasePercentage: 1, includeStandardSeats: 1, includeResaleSeats: 1,
-          useStubHubPricing: 1 }
+          priceIncreasePercentage: 1, includeStandardSeats: 1, includeResaleSeats: 1 }
       ).lean();
       for (const ev of eventDocs) {
         eventDetailsMap.set(ev.mapping_id, {
@@ -439,14 +433,13 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
           defaultPct: ev.priceIncreasePercentage ?? 0,
           includeStandard: ev.includeStandardSeats !== false,
           includeResale: ev.includeResaleSeats !== false,
-          useStubHubPricing: ev.useStubHubPricing === true,
         });
       }
       console.log(`[CSV] Pre-fetched details for ${eventDetailsMap.size} events`);
 
     // Projection — only fields actually read by the row mapper. Six fields
     // (inventory.notes, inventory.in_hand, inventory.files_available, and the
-    // three secondary stubhub.* fields) used to be projected but were never
+    // unused fields used to be projected but were never
     // referenced; pruning them shrinks every chunk's BSON payload.
     const projection = CSV_PROJECTION;
 
@@ -524,7 +517,6 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
             doc.event_std_adj = evData?.stdAdj ?? 0;
             doc.event_resale_adj = evData?.resaleAdj ?? 0;
             doc.event_default_pct = evData?.defaultPct ?? 0;
-            doc.event_use_stubhub_pricing = evData?.useStubHubPricing ?? false;
             enrichedDocs.push(doc);
           }
           if (enrichedDocs.length > 0) {
@@ -639,10 +631,6 @@ interface ConsecutiveGroupDocument {
     zone?: boolean;
     shown_quantity?: number;
     passthrough?: string;
-    stubhubSuggestedPrice?: number | null;
-    stubhubSectionLowest?: number | null;
-    stubhubAtFloor?: boolean;
-    stubhubPricedAt?: Date | string | null;
   };
   event_name?: string;
   venue_name?: string;
@@ -653,7 +641,6 @@ interface ConsecutiveGroupDocument {
   event_std_adj?: number;
   event_resale_adj?: number;
   event_default_pct?: number;
-  event_use_stubhub_pricing?: boolean;
   seats?: Array<{ number: string | number }>;
 }
 
@@ -729,20 +716,14 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
     const row = inventory?.row || '';
     const isGALawn = /^GA\d+$/i.test(row);
 
-    // StubHub auto-pricing: if enabled for this event and scraper has written a price, use it.
-    // Otherwise fall back to the standard markup formula.
-    const useStubHub = doc.event_use_stubhub_pricing && inventory?.stubhubSuggestedPrice != null;
-
     // Apply per-ticket-type markup adjustment on top of already-marked-up listPrice.
     // Formula: adjustedPrice = listPrice * (1 + (defaultPct + adj) / 100) / (1 + defaultPct / 100)
     const rawListPrice = inventory?.listPrice || 0;
     const defaultPct = doc.event_default_pct ?? 0;
     const adj = isResale ? (doc.event_resale_adj ?? 0) : (doc.event_std_adj ?? 0);
-    const markupPrice = defaultPct !== 0 || adj !== 0
+    const adjustedListPrice = defaultPct !== 0 || adj !== 0
       ? rawListPrice * (1 + (defaultPct + adj) / 100) / (1 + defaultPct / 100)
       : rawListPrice;
-
-    const adjustedListPrice = useStubHub ? inventory!.stubhubSuggestedPrice! : markupPrice;
 
     // Pre-compute expensive operations with null safety
     // GA/Lawn seats have synthetic seat numbers — clear them so Sync doesn't see fake numbers
@@ -980,13 +961,12 @@ export async function* generateInventoryCsvStream(
 
     const eventDetailsMap = new Map<string, {
       url: string; stdAdj: number; resaleAdj: number; defaultPct: number;
-      includeStandard: boolean; includeResale: boolean; useStubHubPricing: boolean;
+      includeStandard: boolean; includeResale: boolean;
     }>();
     const eventDocs = await Event.find(
       { mapping_id: { $in: eventMappingIds } },
       { mapping_id: 1, URL: 1, standardMarkupAdjustment: 1, resaleMarkupAdjustment: 1,
-        priceIncreasePercentage: 1, includeStandardSeats: 1, includeResaleSeats: 1,
-        useStubHubPricing: 1 }
+        priceIncreasePercentage: 1, includeStandardSeats: 1, includeResaleSeats: 1 }
     ).lean();
     for (const ev of eventDocs) {
       eventDetailsMap.set(ev.mapping_id, {
@@ -996,7 +976,6 @@ export async function* generateInventoryCsvStream(
         defaultPct: ev.priceIncreasePercentage ?? 0,
         includeStandard: ev.includeStandardSeats !== false,
         includeResale: ev.includeResaleSeats !== false,
-        useStubHubPricing: ev.useStubHubPricing === true,
       });
     }
 
@@ -1079,7 +1058,6 @@ export async function* generateInventoryCsvStream(
           doc.event_std_adj = evData?.stdAdj ?? 0;
           doc.event_resale_adj = evData?.resaleAdj ?? 0;
           doc.event_default_pct = evData?.defaultPct ?? 0;
-          doc.event_use_stubhub_pricing = evData?.useStubHubPricing ?? false;
           enrichedDocs.push(doc);
         }
 

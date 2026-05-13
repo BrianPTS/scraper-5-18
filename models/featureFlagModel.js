@@ -13,7 +13,6 @@ const featureFlagSchema = new mongoose.Schema(
     addEvent: flagType,
     orders: flagType,
     exportCsv: flagType,
-    marketIntelligence: flagType,
     purchaseAccounts: flagType,
 
     // Sub-features within Export CSV

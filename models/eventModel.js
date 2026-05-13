@@ -66,30 +66,9 @@ const eventSchema = new mongoose.Schema(
       type: Boolean,
       default: true, // Include RESALE seats in CSV export
     },
-    useStubHubPricing: {
-      type: Boolean,
-      default: false, // When true, CSV export uses scraper's suggestedPrice instead of markup formula
-    },
-    stubhubEnabled: {
-      type: Boolean,
-      default: true, // When false, scraper skips this event (independent of Skip_Scraping)
-    },
     Last_Updated: {
       type: Date,
       default: Date.now,
-    },
-    // StubHub matching fields (set by scraper)
-    stubhubEventId: {
-      type: String,
-      default: null,
-    },
-    stubhubUrl: {
-      type: String,
-      default: null,
-    },
-    stubhubLastScraped: {
-      type: Date,
-      default: null,
     },
     metadata: {
       lastUpdate: String,

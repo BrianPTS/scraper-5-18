@@ -1090,7 +1090,7 @@ const ExportCsvPage: React.FC = () => {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs font-semibold text-red-800">Auto-Delete Old Events</p>
-                      <p className="text-[11px] text-red-600 mt-0.5">Permanently removes events + inventory + StubHub data after event passes</p>
+                      <p className="text-[11px] text-red-600 mt-0.5">Permanently removes events + inventory after event passes</p>
                     </div>
                     <button
                       onClick={() => setAutoDeleteSettings((prev: AutoDeleteSettings) => ({ ...prev, postEventDeleteEnabled: !prev.postEventDeleteEnabled }))}
