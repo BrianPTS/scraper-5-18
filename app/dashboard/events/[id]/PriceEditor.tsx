@@ -10,6 +10,7 @@ interface Props {
   initialPct: number;
   initialStandardAdj?: number;
   initialResaleAdj?: number;
+  initialBrokerAdj?: number;
 }
 
 const PRESETS = [0, 5, 10, 15, 20, 25, 30, 40, 50];
@@ -61,17 +62,21 @@ function AdjRow({
   );
 }
 
-export default function PriceEditor({ eventId, initialPct, initialStandardAdj = 0, initialResaleAdj = 0 }: Props) {
+export default function PriceEditor({ eventId, initialPct, initialStandardAdj = 0, initialResaleAdj = 0, initialBrokerAdj = 0 }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [value, setValue] = useState(initialPct);
   const [inputVal, setInputVal] = useState(String(initialPct));
   const [stdAdj, setStdAdj] = useState(initialStandardAdj);
   const [resaleAdj, setResaleAdj] = useState(initialResaleAdj);
+  const [brokerAdj, setBrokerAdj] = useState(initialBrokerAdj);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isDirty = value !== initialPct || stdAdj !== initialStandardAdj || resaleAdj !== initialResaleAdj;
+  const isDirty = value !== initialPct
+    || stdAdj !== initialStandardAdj
+    || resaleAdj !== initialResaleAdj
+    || brokerAdj !== initialBrokerAdj;
 
   useEffect(() => { setInputVal(String(value)); }, [value]);
 
@@ -93,6 +98,7 @@ export default function PriceEditor({ eventId, initialPct, initialStandardAdj = 
           priceIncreasePercentage: value,
           standardMarkupAdjustment: stdAdj,
           resaleMarkupAdjustment: resaleAdj,
+          brokerMarkupAdjustment: brokerAdj,
         } as Parameters<typeof updateEvent>[1], false);
         setSaveState('saved');
         router.refresh();
@@ -196,7 +202,7 @@ export default function PriceEditor({ eventId, initialPct, initialStandardAdj = 
           />
           <div className="h-px bg-gray-200 my-1" />
           <AdjRow
-            label="Resale"
+            label="Resale (Fan)"
             adj={resaleAdj}
             defaultPct={value}
             onChange={(v) => {
@@ -205,6 +211,20 @@ export default function PriceEditor({ eventId, initialPct, initialStandardAdj = 
             }}
             disabled={isPending}
           />
+          <div className="h-px bg-gray-200 my-1" />
+          <AdjRow
+            label="Broker"
+            adj={brokerAdj}
+            defaultPct={value}
+            onChange={(v) => {
+              setBrokerAdj(v);
+              setSaveState("idle");
+            }}
+            disabled={isPending}
+          />
+          <p className="text-[10px] text-gray-400 mt-1 leading-tight">
+            Broker = listings tagged &ldquo;resale broker&rdquo; by scraper. If 0, falls back to Resale %.
+          </p>
         </div>
 
         {/* Save button */}

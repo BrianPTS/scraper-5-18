@@ -81,6 +81,7 @@ interface VSProd {
 interface ImportState {
   mappingId: string;
   percentage: number;
+  brokerAdj: number;
   status: 'idle' | 'importing' | 'success' | 'error';
   error?: string;
   vividSearchUrl?: string;
@@ -561,6 +562,7 @@ export default function ImportEventsClient({
         Available_Seats: 0, Skip_Scraping: true, inHandDate: inHandDt.toISOString(),
         mapping_id: mappingId, priceIncreasePercentage: imports[event.id]?.percentage ?? 30,
         standardMarkupAdjustment: 0, resaleMarkupAdjustment: 0,
+        brokerMarkupAdjustment: imports[event.id]?.brokerAdj ?? 0,
       };
       const result = await createEvent(eventData as Parameters<typeof createEvent>[0]);
       if (result.error) throw new Error(result.error);
@@ -576,7 +578,7 @@ export default function ImportEventsClient({
   /* ---- Event Card ---- */
   const renderEventCard = (event: TMEvent, index: number) => {
     const listed = listedEvents[event.id];
-    const impState = imports[event.id] || { mappingId: '', percentage: 30, status: 'idle' };
+    const impState = imports[event.id] || { mappingId: '', percentage: 30, brokerAdj: 0, status: 'idle' };
     const isImported = impState.status === 'success';
     const isImporting = impState.status === 'importing';
     const isListed = !!listed;
@@ -817,6 +819,22 @@ export default function ImportEventsClient({
                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 font-medium">%</span>
                     </div>
                     <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">Markup</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="number"
+                        min={-100}
+                        max={500}
+                        placeholder="0"
+                        value={impState.brokerAdj ?? 0}
+                        onChange={e => updateImportState(event.id, { brokerAdj: Number(e.target.value) || 0, status: 'idle', error: undefined })}
+                        disabled={isImporting}
+                        className="w-full px-3 py-2 pr-8 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent disabled:bg-slate-50 transition-all"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 font-medium">%</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">Broker adj</span>
                   </div>
                   <button onClick={() => handleImport(event)} disabled={isImporting}
                     className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-medium rounded-lg hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 transition-all shadow-sm shadow-purple-200">

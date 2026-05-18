@@ -54,6 +54,7 @@ export async function GET(request: Request) {
       priceIncreasePercentage: 1,
       standardMarkupAdjustment: 1,
       resaleMarkupAdjustment: 1,
+      brokerMarkupAdjustment: 1,
       includeStandardSeats: 1,
       includeResaleSeats: 1,
       eventType: 1,

@@ -29,6 +29,7 @@ interface FormData {
   Percentage_Increase_ListCost: FormField;
   standardMarkupAdjustment: FormField;
   resaleMarkupAdjustment: FormField;
+  brokerMarkupAdjustment: FormField;
   eventType: FormField;
 }
 
@@ -70,6 +71,7 @@ const validationRules: {
   Percentage_Increase_ListCost: (value: number) => boolean;
   standardMarkupAdjustment: (value: number) => boolean;
   resaleMarkupAdjustment: (value: number) => boolean;
+  brokerMarkupAdjustment: (value: number) => boolean;
   eventType: (value: string) => boolean;
 } = {
   URL: (value: string) => {
@@ -93,6 +95,7 @@ const validationRules: {
   Percentage_Increase_ListCost: (value: number) => value >= 0,
   standardMarkupAdjustment: () => true,
   resaleMarkupAdjustment: () => true,
+  brokerMarkupAdjustment: () => true,
   eventType: (value: string) => isValidEventType(value),
 };
 
@@ -111,6 +114,7 @@ const errorMessages = {
   Percentage_Increase_ListCost: "Please enter a valid percentage (0 or greater)",
   standardMarkupAdjustment: "",
   resaleMarkupAdjustment: "",
+  brokerMarkupAdjustment: "",
   eventType: "Pick NFL, MLB, NHL, NBA, or Other",
 };
 
@@ -145,6 +149,7 @@ export function EventFormProvider({ children, initialData }: {
       Percentage_Increase_ListCost: { value: initialData?.priceIncreasePercentage || 0, status: 'untouched' },
       standardMarkupAdjustment: { value: initialData?.standardMarkupAdjustment ?? 0, status: 'untouched' },
       resaleMarkupAdjustment: { value: initialData?.resaleMarkupAdjustment ?? 0, status: 'untouched' },
+      brokerMarkupAdjustment: { value: initialData?.brokerMarkupAdjustment ?? 0, status: 'untouched' },
       eventType: { value: initialData?.eventType ?? "", status: 'untouched' },
     };
   };
@@ -181,6 +186,7 @@ export function EventFormProvider({ children, initialData }: {
       case "Percentage_Increase_ListCost":
       case "standardMarkupAdjustment":
       case "resaleMarkupAdjustment":
+      case "brokerMarkupAdjustment":
         return validationRules[name](value as number);
       case "Skip_Scraping":
         return validationRules[name](value as boolean);

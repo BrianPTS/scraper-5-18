@@ -24,6 +24,7 @@ interface EventData {
   priceIncreasePercentage?: number;
   standardMarkupAdjustment?: number;
   resaleMarkupAdjustment?: number;
+  brokerMarkupAdjustment?: number;
   standardQty?: number;
   resaleQty?: number;
   standardRows?: number;
@@ -410,6 +411,7 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                           {(() => {
                             const stdAdj = event.standardMarkupAdjustment ?? 0;
                             const resAdj = event.resaleMarkupAdjustment ?? 0;
+                            const brkAdj = event.brokerMarkupAdjustment ?? 0;
                             return (
                               <div className="flex items-center gap-1">
                                 <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded border tabular-nums ${
@@ -426,12 +428,19 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                                 }`}>
                                   <span className="mr-0.5 opacity-50 text-[9px]">R</span>{resAdj > 0 ? '+' : ''}{resAdj}%
                                 </span>
+                                <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded border tabular-nums ${
+                                  brkAdj > 0 ? 'border-orange-200 bg-orange-50 text-orange-600'
+                                  : brkAdj < 0 ? 'border-sky-200 bg-sky-50 text-sky-700'
+                                  : 'border-gray-200 bg-white text-gray-400'
+                                }`}>
+                                  <span className="mr-0.5 opacity-50 text-[9px]">B</span>{brkAdj > 0 ? '+' : ''}{brkAdj}%
+                                </span>
                               </div>
                             );
                           })()}
                         </div>
                       </td>
-                      
+
                       <td className="px-3 py-2 whitespace-nowrap text-center">
                         {lastUpdated ? (
                           <TimeAgo iso={lastUpdated} dateLabel={formatDate(lastUpdated)} />
@@ -559,6 +568,7 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                           {(() => {
                             const stdAdj = event.standardMarkupAdjustment ?? 0;
                             const resAdj = event.resaleMarkupAdjustment ?? 0;
+                            const brkAdj = event.brokerMarkupAdjustment ?? 0;
                             return (
                               <div className="flex items-center gap-1">
                                 <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded border tabular-nums ${
@@ -574,6 +584,13 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                                   : 'border-gray-200 bg-white text-gray-400'
                                 }`}>
                                   <span className="mr-0.5 opacity-50 text-[9px]">R</span>{resAdj > 0 ? '+' : ''}{resAdj}%
+                                </span>
+                                <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded border tabular-nums ${
+                                  brkAdj > 0 ? 'border-orange-200 bg-orange-50 text-orange-600'
+                                  : brkAdj < 0 ? 'border-sky-200 bg-sky-50 text-sky-700'
+                                  : 'border-gray-200 bg-white text-gray-400'
+                                }`}>
+                                  <span className="mr-0.5 opacity-50 text-[9px]">B</span>{brkAdj > 0 ? '+' : ''}{brkAdj}%
                                 </span>
                               </div>
                             );

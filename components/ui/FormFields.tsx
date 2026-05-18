@@ -395,21 +395,26 @@ export const EventFormFields = {
   MarkupAdjustments: ({
     standardAdj,
     resaleAdj,
+    brokerAdj,
     defaultPct,
     onStandardChange,
     onResaleChange,
+    onBrokerChange,
     disabled,
   }: {
     standardAdj: number;
     resaleAdj: number;
+    brokerAdj: number;
     defaultPct: number;
     onStandardChange: (val: number) => void;
     onResaleChange: (val: number) => void;
+    onBrokerChange: (val: number) => void;
     disabled?: boolean;
   }) => {
     const step = 1;
     const effectiveStandard = defaultPct + standardAdj;
     const effectiveResale = defaultPct + resaleAdj;
+    const effectiveBroker = defaultPct + (brokerAdj !== 0 ? brokerAdj : resaleAdj);
 
     const colorClass = (adj: number) =>
       adj > 0 ? 'text-red-600 font-bold' : adj < 0 ? 'text-blue-600 font-bold' : 'text-slate-400';
@@ -420,7 +425,7 @@ export const EventFormFields = {
           CSV Price Adjustments{' '}
           <span className="text-xs font-normal text-gray-400">(on top of scraper default)</span>
         </div>
-        <div className="grid grid-cols-2 gap-3 p-4 rounded-lg border border-gray-200 bg-gray-50">
+        <div className="grid grid-cols-3 gap-3 p-4 rounded-lg border border-gray-200 bg-gray-50">
           {/* Standard */}
           <div className="space-y-1">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Standard</p>
@@ -492,8 +497,44 @@ export const EventFormFields = {
               Effective: <span className={colorClass(resaleAdj)}>{effectiveResale > 0 ? '+' : ''}{effectiveResale}%</span>
             </p>
           </div>
+
+          {/* Broker */}
+          <div className="space-y-1">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Broker</p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onBrokerChange(brokerAdj - step)}
+                disabled={disabled}
+                className="w-8 h-8 flex items-center justify-center rounded-md border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40 transition-colors"
+                aria-label="Decrease broker adjustment"
+              >
+                <Minus size={13} />
+              </button>
+              <input
+                type="number"
+                value={brokerAdj}
+                onChange={e => onBrokerChange(Number(e.target.value))}
+                disabled={disabled}
+                className="w-16 text-center border border-gray-300 rounded-md py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                step={step}
+              />
+              <button
+                type="button"
+                onClick={() => onBrokerChange(brokerAdj + step)}
+                disabled={disabled}
+                className="w-8 h-8 flex items-center justify-center rounded-md border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40 transition-colors"
+                aria-label="Increase broker adjustment"
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">
+              Effective: <span className={colorClass(brokerAdj !== 0 ? brokerAdj : resaleAdj)}>{effectiveBroker > 0 ? '+' : ''}{effectiveBroker}%</span>
+            </p>
+          </div>
         </div>
-        <p className="mt-1 text-xs text-gray-400">These adjustments are applied at CSV generation time on top of the scraper default</p>
+        <p className="mt-1 text-xs text-gray-400">These adjustments are applied at CSV generation time on top of the scraper default. Broker = listings tagged &ldquo;resale broker&rdquo; (falls back to Resale if 0).</p>
       </div>
     );
   },

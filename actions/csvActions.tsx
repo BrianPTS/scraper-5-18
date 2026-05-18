@@ -417,19 +417,21 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
       // Pre-fetch ALL event details once (small — only active events) instead of
       // running $lookup per chunk. This is the single biggest speed-up.
       const eventDetailsMap = new Map<string, {
-        url: string; stdAdj: number; resaleAdj: number; defaultPct: number;
+        url: string; stdAdj: number; resaleAdj: number; brokerAdj: number; defaultPct: number;
         includeStandard: boolean; includeResale: boolean;
       }>();
       const eventDocs = await Event.find(
         { mapping_id: { $in: eventMappingIds } },
         { mapping_id: 1, URL: 1, standardMarkupAdjustment: 1, resaleMarkupAdjustment: 1,
-          priceIncreasePercentage: 1, includeStandardSeats: 1, includeResaleSeats: 1 }
+          brokerMarkupAdjustment: 1, priceIncreasePercentage: 1,
+          includeStandardSeats: 1, includeResaleSeats: 1 }
       ).lean();
       for (const ev of eventDocs) {
         eventDetailsMap.set(ev.mapping_id, {
           url: ev.URL || '',
           stdAdj: ev.standardMarkupAdjustment ?? 0,
           resaleAdj: ev.resaleMarkupAdjustment ?? 0,
+          brokerAdj: ev.brokerMarkupAdjustment ?? 0,
           defaultPct: ev.priceIncreasePercentage ?? 0,
           includeStandard: ev.includeStandardSeats !== false,
           includeResale: ev.includeResaleSeats !== false,
@@ -516,6 +518,7 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
             doc.event_url = evData?.url || '';
             doc.event_std_adj = evData?.stdAdj ?? 0;
             doc.event_resale_adj = evData?.resaleAdj ?? 0;
+            doc.event_broker_adj = evData?.brokerAdj ?? 0;
             doc.event_default_pct = evData?.defaultPct ?? 0;
             enrichedDocs.push(doc);
           }
@@ -640,6 +643,7 @@ interface ConsecutiveGroupDocument {
   event_url?: string;
   event_std_adj?: number;
   event_resale_adj?: number;
+  event_broker_adj?: number;
   event_default_pct?: number;
   seats?: Array<{ number: string | number }>;
 }
@@ -718,9 +722,15 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
 
     // Apply per-ticket-type markup adjustment on top of already-marked-up listPrice.
     // Formula: adjustedPrice = listPrice * (1 + (defaultPct + adj) / 100) / (1 + defaultPct / 100)
+    // Broker resale (tag contains "broker") uses brokerAdj; falls back to resaleAdj if brokerAdj is 0.
     const rawListPrice = inventory?.listPrice || 0;
     const defaultPct = doc.event_default_pct ?? 0;
-    const adj = isResale ? (doc.event_resale_adj ?? 0) : (doc.event_std_adj ?? 0);
+    const isBroker = isResale && /broker/i.test(inventory?.tags || '');
+    const brokerAdj = doc.event_broker_adj ?? 0;
+    const resaleAdjVal = doc.event_resale_adj ?? 0;
+    const adj = isBroker
+      ? (brokerAdj !== 0 ? brokerAdj : resaleAdjVal)
+      : isResale ? resaleAdjVal : (doc.event_std_adj ?? 0);
     const adjustedListPrice = defaultPct !== 0 || adj !== 0
       ? rawListPrice * (1 + (defaultPct + adj) / 100) / (1 + defaultPct / 100)
       : rawListPrice;
@@ -960,19 +970,21 @@ export async function* generateInventoryCsvStream(
     const eventFilter = { mapping_id: { $in: eventMappingIds } };
 
     const eventDetailsMap = new Map<string, {
-      url: string; stdAdj: number; resaleAdj: number; defaultPct: number;
+      url: string; stdAdj: number; resaleAdj: number; brokerAdj: number; defaultPct: number;
       includeStandard: boolean; includeResale: boolean;
     }>();
     const eventDocs = await Event.find(
       { mapping_id: { $in: eventMappingIds } },
       { mapping_id: 1, URL: 1, standardMarkupAdjustment: 1, resaleMarkupAdjustment: 1,
-        priceIncreasePercentage: 1, includeStandardSeats: 1, includeResaleSeats: 1 }
+        brokerMarkupAdjustment: 1, priceIncreasePercentage: 1,
+        includeStandardSeats: 1, includeResaleSeats: 1 }
     ).lean();
     for (const ev of eventDocs) {
       eventDetailsMap.set(ev.mapping_id, {
         url: ev.URL || '',
         stdAdj: ev.standardMarkupAdjustment ?? 0,
         resaleAdj: ev.resaleMarkupAdjustment ?? 0,
+        brokerAdj: ev.brokerMarkupAdjustment ?? 0,
         defaultPct: ev.priceIncreasePercentage ?? 0,
         includeStandard: ev.includeStandardSeats !== false,
         includeResale: ev.includeResaleSeats !== false,
@@ -1057,6 +1069,7 @@ export async function* generateInventoryCsvStream(
           doc.event_url = evData?.url || '';
           doc.event_std_adj = evData?.stdAdj ?? 0;
           doc.event_resale_adj = evData?.resaleAdj ?? 0;
+          doc.event_broker_adj = evData?.brokerAdj ?? 0;
           doc.event_default_pct = evData?.defaultPct ?? 0;
           enrichedDocs.push(doc);
         }

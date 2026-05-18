@@ -31,6 +31,7 @@ interface EventType {
   priceIncreasePercentage?: number;
   standardMarkupAdjustment?: number;
   resaleMarkupAdjustment?: number;
+  brokerMarkupAdjustment?: number;
   includeStandardSeats?: boolean;
   includeResaleSeats?: boolean;
   Last_Updated?: string;
@@ -76,6 +77,7 @@ export default async function EventDetailsPage({ params }: EventDetailsProps) {
   const pct = event.priceIncreasePercentage ?? 25;
   const stdAdj = event.standardMarkupAdjustment ?? 0;
   const resAdj = event.resaleMarkupAdjustment ?? 0;
+  const brkAdj = event.brokerMarkupAdjustment ?? 0;
 
   const inventoryCounts = await inventoryPromise;
   const mid = event.mapping_id;
@@ -230,6 +232,9 @@ export default async function EventDetailsPage({ params }: EventDetailsProps) {
               <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded tabular-nums ${
                 resAdj !== 0 ? (resAdj > 0 ? 'bg-orange-50 text-orange-600' : 'bg-sky-50 text-sky-600') : 'bg-slate-100 text-slate-400'
               }`}>R {pct + resAdj}%</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded tabular-nums ${
+                brkAdj !== 0 ? (brkAdj > 0 ? 'bg-orange-50 text-orange-600' : 'bg-sky-50 text-sky-600') : 'bg-slate-100 text-slate-400'
+              }`}>B {pct + (brkAdj !== 0 ? brkAdj : resAdj)}%</span>
             </div>
           </div>
 
@@ -328,6 +333,7 @@ export default async function EventDetailsPage({ params }: EventDetailsProps) {
             initialPct={pct}
             initialStandardAdj={stdAdj}
             initialResaleAdj={resAdj}
+            initialBrokerAdj={brkAdj}
           />
         </div>
       </div>
