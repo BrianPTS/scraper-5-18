@@ -821,7 +821,7 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
       custom_split: customSplit,
       stock_type:
         (inventory?.stockType as CsvRow["stock_type"]) || "ELECTRONIC",
-      zone: isGALawn ? "Y" : "N",
+      zone: "Y",
       shown_quantity: inventory?.shown_quantity || undefined,
       passthrough: inventory?.passthrough || "",
     } as CsvRow;
