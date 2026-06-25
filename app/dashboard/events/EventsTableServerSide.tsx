@@ -10,6 +10,7 @@ import EventsTableControls from './EventsTableControls';
 import EventTableActions from './EventTableActions';
 import PaginationControls from './PaginationControls';
 import TimeAgo from './TimeAgo';
+import { BulkSelectionProvider, BulkActionBar, BulkSelectAllCheckbox, BulkRowCheckbox } from './BulkSelection';
 
 interface EventData {
   _id: string;
@@ -222,8 +223,18 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
   const total = eventsResult.total || 0;
   const totalPages = eventsResult.totalPages || 1;
 
+  const pageEventMeta = events.map(e => ({
+    id: e._id,
+    name: e.Event_Name,
+    active: !e.Skip_Scraping,
+  }));
+
   return (
+    <BulkSelectionProvider pageEvents={pageEventMeta}>
     <div className="space-y-3">
+      {/* Bulk action bar — appears only when rows are selected */}
+      <BulkActionBar />
+
       {/* Search and Filter Controls */}
       <EventsTableControls
         currentPage={page}
@@ -263,6 +274,7 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full divide-y divide-gray-200 table-fixed">
               <colgroup>
+                <col className="w-[36px]" />
                 <col className="w-[90px]" />
                 <col />
                 <col className="w-[130px]" />
@@ -274,6 +286,9 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
               </colgroup>
               <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
                 <tr>
+                  <th className="px-3 py-2.5 text-center text-xs font-bold text-gray-600 uppercase tracking-wider">
+                    <BulkSelectAllCheckbox />
+                  </th>
                   <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
                     Status
                   </th>
@@ -321,14 +336,17 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                   const resIncluded = event.includeResaleSeats !== false;
 
                   return (
-                    <tr 
+                    <tr
                       key={event._id}
                       className={`hover:bg-gray-50 transition-[background-color] duration-150 ${
-                        isActive && fresh ? 'bg-blue-50 border-l-2 border-blue-400' : 
+                        isActive && fresh ? 'bg-blue-50 border-l-2 border-blue-400' :
                         isActive && !fresh ? 'bg-amber-50 border-l-2 border-amber-400' :
                         'bg-gray-50/60 border-l-2 border-gray-300 opacity-75'
                       }`}
                     >
+                      <td className="px-3 py-2 whitespace-nowrap text-center">
+                        <BulkRowCheckbox eventId={event._id} eventName={event.Event_Name} />
+                      </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <StatusBadge isActive={isActive} />
                       </td>
@@ -484,7 +502,10 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                 >
                   <div className="space-y-3">
                     {/* Header Row */}
-                    <div className="flex items-start justify-between">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="pt-1">
+                        <BulkRowCheckbox eventId={event._id} eventName={event.Event_Name} />
+                      </div>
                       <div className="flex-1 min-w-0">
                         <Link
                           href={`/dashboard/events/${event._id}`}
@@ -636,5 +657,6 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
         </div>
       )}
     </div>
+    </BulkSelectionProvider>
   );
 }

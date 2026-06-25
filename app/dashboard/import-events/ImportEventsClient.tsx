@@ -82,6 +82,7 @@ interface ImportState {
   mappingId: string;
   percentage: number;
   brokerAdj: number;
+  eventType: string;
   status: 'idle' | 'importing' | 'success' | 'error';
   error?: string;
   vividSearchUrl?: string;
@@ -563,6 +564,7 @@ export default function ImportEventsClient({
         mapping_id: mappingId, priceIncreasePercentage: imports[event.id]?.percentage ?? 30,
         standardMarkupAdjustment: 0, resaleMarkupAdjustment: 0,
         brokerMarkupAdjustment: imports[event.id]?.brokerAdj ?? 0,
+        ...(imports[event.id]?.eventType ? { eventType: imports[event.id]!.eventType } : {}),
       };
       const result = await createEvent(eventData as Parameters<typeof createEvent>[0]);
       if (result.error) throw new Error(result.error);
@@ -578,7 +580,7 @@ export default function ImportEventsClient({
   /* ---- Event Card ---- */
   const renderEventCard = (event: TMEvent, index: number) => {
     const listed = listedEvents[event.id];
-    const impState = imports[event.id] || { mappingId: '', percentage: 30, brokerAdj: 0, status: 'idle' };
+    const impState = imports[event.id] || { mappingId: '', percentage: 30, brokerAdj: 0, eventType: '', status: 'idle' };
     const isImported = impState.status === 'success';
     const isImporting = impState.status === 'importing';
     const isListed = !!listed;
@@ -835,6 +837,23 @@ export default function ImportEventsClient({
                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 font-medium">%</span>
                     </div>
                     <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">Broker adj</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={impState.eventType ?? ''}
+                      onChange={e => updateImportState(event.id, { eventType: e.target.value, status: 'idle', error: undefined })}
+                      disabled={isImporting}
+                      className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-50 transition-all bg-white"
+                    >
+                      <option value="">— Select —</option>
+                      <option value="NFL">NFL</option>
+                      <option value="MLB">MLB</option>
+                      <option value="NHL">NHL</option>
+                      <option value="NBA">NBA</option>
+                      <option value="MLS">MLS</option>
+                      <option value="Other">Other</option>
+                    </select>
+                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">Event type</span>
                   </div>
                   <button onClick={() => handleImport(event)} disabled={isImporting}
                     className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-medium rounded-lg hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 transition-all shadow-sm shadow-purple-200">
