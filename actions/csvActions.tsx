@@ -281,6 +281,8 @@ const CSV_PROJECTION = {
   'inventory.zone': 1,
   'inventory.shown_quantity': 1,
   'inventory.passthrough': 1,
+  'inventory.seatType': 1,
+  'inventory.productType': 1,
 } as const;
 
 // ── Global: stop events with seats <= threshold & clear their inventory ──
@@ -719,6 +721,11 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
     // Detect GA/Lawn rows — scraper stores synthetic row names like "GA1", "GA2", etc.
     const row = inventory?.row || '';
     const isGALawn = /^GA\d+$/i.test(row);
+    // Detect parking-pass rows emitted by the scraper (row === "GA",
+    // seatType === "PARKING", productType === "parking"). Treat like GA/Lawn
+    // for seatsString clearing so Automatiq doesn't see empty seat data.
+    const inventoryAny = inventory as unknown as { seatType?: string; productType?: string };
+    const isParking = inventoryAny?.seatType === 'PARKING' || inventoryAny?.productType === 'parking';
 
     // Apply per-ticket-type markup adjustment on top of already-marked-up listPrice.
     // Formula: adjustedPrice = listPrice * (1 + (defaultPct + adj) / 100) / (1 + defaultPct / 100)
@@ -737,7 +744,7 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
 
     // Pre-compute expensive operations with null safety
     // GA/Lawn seats have synthetic seat numbers — clear them so Sync doesn't see fake numbers
-    const seatsString = isGALawn ? '' :
+    const seatsString = (isGALawn || isParking) ? '' :
       (doc.seats && doc.seats.length > 0 ?
         doc.seats.map((seat: { number: string | number }) => String(seat.number)).join(',') : '');
     const eventDateString = doc.event_date ?
@@ -780,10 +787,12 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
     // Any extra tags stored on the inventory (anything other than the reserved
     // STANDARD/RESALE/GA_* values) are appended so they survive the export.
     const isStandard = inventory?.splitType === 'NEVERLEAVEONE';
-    const baseTag = isGALawn
+    const baseTag = isParking
+      ? ((inventory?.tags || '').toLowerCase().includes('vip') ? 'PARKING_VIP' : 'PARKING')
+      : isGALawn
       ? (isStandard ? 'GA_STANDARD' : 'GA_RESALE')
       : (isStandard ? 'STANDARD' : 'RESALE');
-    const RESERVED_TAGS = new Set(['STANDARD', 'RESALE', 'GA_STANDARD', 'GA_RESALE']);
+    const RESERVED_TAGS = new Set(['STANDARD', 'RESALE', 'GA_STANDARD', 'GA_RESALE', 'PARKING', 'PARKING_VIP', 'PARKING VIP']);
     // Prefer specific inventory tags (e.g. "RESALE BROKER") over the generic base.
     // Tags are emitted uppercased; fall back to the base tag when none are present.
     const extraTags = (inventory?.tags || '')
