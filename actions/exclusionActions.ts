@@ -10,10 +10,15 @@ export interface SectionRowExclusion {
   excludedRows: string[];
 }
 
+export interface DominatedListingsRule {
+  enabled: boolean;
+}
+
 export interface ExclusionRulesData {
   eventId: string;
   eventName: string;
   sectionRowExclusions: SectionRowExclusion[];
+  dominatedListings?: DominatedListingsRule;
   isActive: boolean;
 }
 

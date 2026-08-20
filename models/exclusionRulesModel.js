@@ -28,6 +28,13 @@ const exclusionRulesSchema = new mongoose.Schema({
     required: true
   },
   sectionRowExclusions: [sectionRowExclusionSchema],
+  // Dominated-listings rule: within (section, quantity, custom_split),
+  // drop any listing whose per-seat list_price is >= a lower-row (closer
+  // to field) listing. When enabled, applied at CSV-emit time in
+  // csvActions.tsx after sectionRowExclusions.
+  dominatedListings: {
+    enabled: { type: Boolean, default: false },
+  },
   isActive: {
     type: Boolean,
     default: true

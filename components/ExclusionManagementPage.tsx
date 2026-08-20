@@ -50,6 +50,7 @@ export default function ExclusionManagementPage({
   const [sections, setSections] = useState<SectionData[]>([]);
   const [sectionRowExclusions, setSectionRowExclusions] = useState<SectionRowExclusion[]>([]);
   const [outliers, setOutliers] = useState<OutlierAnalysis | null>(null);
+  const [dominatedListingsEnabled, setDominatedListingsEnabled] = useState<boolean>(false);
   const { actions: notificationActions } = useNotifications();
 
   const loadData = useCallback(async () => {
@@ -68,6 +69,7 @@ export default function ExclusionManagementPage({
       if (rulesResult.success && rulesResult.data) {
         const data = Array.isArray(rulesResult.data) ? rulesResult.data[0] : rulesResult.data;
         setSectionRowExclusions(data?.sectionRowExclusions || []);
+        setDominatedListingsEnabled(!!data?.dominatedListings?.enabled);
       }
 
       if (outlierResult.success && outlierResult.data) {
@@ -93,6 +95,7 @@ export default function ExclusionManagementPage({
         eventId,
         eventName,
         sectionRowExclusions,
+        dominatedListings: { enabled: dominatedListingsEnabled },
         isActive: true
       };
       const result = await saveExclusionRules(rulesData);
@@ -225,6 +228,39 @@ export default function ExclusionManagementPage({
               {sectionRowExclusions.filter(e => e.excludeEntireSection).length}
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* ── Dominated-Listings Rule (per-event toggle) ── */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2">
+          <span className="w-6 h-6 rounded-md bg-emerald-50 flex items-center justify-center">
+            <TrendingDown size={12} className="text-emerald-600" />
+          </span>
+          <h2 className="text-sm font-bold text-slate-700">Dominated-Listings Rule</h2>
+          <span className="ml-auto text-[11px] text-slate-400 font-medium">
+            Drops higher rows priced ≥ a lower row in the same (section, qty, split)
+          </span>
+        </div>
+        <div className="p-5">
+          <label className="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={dominatedListingsEnabled}
+              onChange={(e) => setDominatedListingsEnabled(e.target.checked)}
+              className="mt-1 w-4 h-4 accent-emerald-600"
+            />
+            <span className="text-sm text-slate-700">
+              <span className="font-semibold">Enable dominated-listings exclusion for this event.</span>
+              <br />
+              <span className="text-xs text-slate-500 leading-relaxed">
+                When on, the CSV emitter groups this event&apos;s inventory by (section, quantity, custom_split),
+                sorts by row proximity to field, and drops any listing whose per-seat list_price is
+                ≥ a lower row&apos;s per-seat price. GA / parking / lawn rows (no row rank) are never affected.
+                Runs on non-streaming CSV generation only.
+              </span>
+            </span>
+          </label>
         </div>
       </div>
 

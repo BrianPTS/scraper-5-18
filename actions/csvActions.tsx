@@ -68,6 +68,10 @@ interface CsvRow {
   zone: 'Y' | 'N';
   shown_quantity?: number;
   passthrough?: string;
+  // Internal-only, not emitted to Automatiq CSV. 0-based front-to-back
+  // row index from TM's SECTION.segments; null when unknown or GA.
+  // Used by the dominated-listings exclusion filter.
+  rowRank?: number | null;
 }
 
 const csvColumns = [
@@ -195,6 +199,96 @@ async function buildExclusionFilter(mappingIds: string[]): Promise<ExclusionFilt
   }
 }
 
+// Load the per-event "dominated-listings" enable set. Returns a Set of
+// mapping_ids for which the rule should fire. If the ExclusionRules doc
+// has dominatedListings.enabled=true, that event's mapping_id lands in
+// the set. Empty set = no events opted in = no-op.
+async function loadDominatedListingsEnabledSet(mappingIds: string[]): Promise<Set<string>> {
+  if (mappingIds.length === 0) return new Set();
+  try {
+    const events = await Event.find(
+      { mapping_id: { $in: mappingIds } },
+      { _id: 1, mapping_id: 1 }
+    ).lean();
+    if (events.length === 0) return new Set();
+
+    const objectIdToMappingId = new Map<string, string>();
+    const eventIds: string[] = [];
+    for (const e of events as Array<{ _id: unknown; mapping_id: string }>) {
+      const oid = String(e._id);
+      objectIdToMappingId.set(oid, e.mapping_id);
+      eventIds.push(oid);
+    }
+
+    const rules = await ExclusionRules.find(
+      { eventId: { $in: eventIds }, isActive: true, 'dominatedListings.enabled': true },
+      { eventId: 1 }
+    ).lean();
+
+    const enabled = new Set<string>();
+    for (const rule of rules as Array<{ eventId: string }>) {
+      const mid = objectIdToMappingId.get(String(rule.eventId));
+      if (mid) enabled.add(mid);
+    }
+    return enabled;
+  } catch (error) {
+    console.error('Error loading dominated-listings enable set:', error);
+    return new Set();
+  }
+}
+
+// Apply the dominated-listings rule to records for events opted in.
+// Within (event_id, section, quantity, custom_split), sort by rowRank
+// ascending (front-to-back), then per-seat list_price ascending; drop
+// any record dominated by a lower-rank sibling at <= per-seat price.
+// Records for events NOT in enabledMappingIds pass through untouched.
+// GA/parking/lawn (rowRank == null) also pass through untouched since
+// they share physical location — dominance doesn't apply.
+export function applyDominatedListingsFilter(
+  records: CsvRow[],
+  enabledMappingIds: Set<string>,
+): { kept: CsvRow[]; dropped: number } {
+  if (enabledMappingIds.size === 0) return { kept: records, dropped: 0 };
+
+  type Bucket = { key: string; items: CsvRow[] };
+  const buckets = new Map<string, Bucket>();
+  const passthrough: CsvRow[] = [];
+
+  for (const r of records) {
+    if (!enabledMappingIds.has(r.event_id) || r.rowRank == null) {
+      passthrough.push(r);
+      continue;
+    }
+    const bkey = `${r.event_id}|${r.section}|${r.quantity}|${r.custom_split || ''}`;
+    let b = buckets.get(bkey);
+    if (!b) { b = { key: bkey, items: [] }; buckets.set(bkey, b); }
+    b.items.push(r);
+  }
+
+  const kept: CsvRow[] = [...passthrough];
+  let dropped = 0;
+  for (const bucket of buckets.values()) {
+    bucket.items.sort((a, b) => {
+      const ra = a.rowRank ?? Number.MAX_SAFE_INTEGER;
+      const rb = b.rowRank ?? Number.MAX_SAFE_INTEGER;
+      if (ra !== rb) return ra - rb;
+      return (a.list_price ?? 0) - (b.list_price ?? 0);
+    });
+    const survivors: CsvRow[] = [];
+    for (const item of bucket.items) {
+      const perSeat = item.list_price ?? 0;
+      const dominated = survivors.some(s => (s.list_price ?? 0) <= perSeat);
+      if (dominated) {
+        dropped++;
+      } else {
+        survivors.push(item);
+      }
+    }
+    kept.push(...survivors);
+  }
+  return { kept, dropped };
+}
+
 const isBlockedVenueState = (record: CsvRow): boolean => {
   const v = (record.venue_name || '').trim().toLowerCase();
   return BLOCKED_STATES.some(s => v === s || v.endsWith(', ' + s) || v.endsWith(',' + s));
@@ -283,6 +377,7 @@ const CSV_PROJECTION = {
   'inventory.passthrough': 1,
   'inventory.seatType': 1,
   'inventory.productType': 1,
+  'inventory.rowRank': 1,
 } as const;
 
 // ── Global: stop events with seats <= threshold & clear their inventory ──
@@ -569,6 +664,18 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
         console.log(`[CSV] Min seat filter [section] (<= ${minSeatFilter}): removed ${removed} listings`);
       }
 
+      // Dominated-listings rule: fires only for events opted in via
+      // ExclusionRules.dominatedListings.enabled=true. Runs after the
+      // batch loop so we can compare across the full event.
+      const dominatedEnabled = await loadDominatedListingsEnabledSet(eventMappingIds);
+      if (dominatedEnabled.size > 0) {
+        const beforeDom = filteredRecords.length;
+        const { kept, dropped } = applyDominatedListingsFilter(filteredRecords, dominatedEnabled);
+        filteredRecords = kept;
+        excludedCount += dropped;
+        console.log(`[CSV] Dominated-listings filter: ${dominatedEnabled.size} events opted in, removed ${dropped} of ${beforeDom} listings`);
+      }
+
       console.log(`[CSV] Done: ${filteredRecords.length} kept / ${producedCount} produced / ${excludedCount} excluded (processed ${processedCount} docs in ${Date.now() - startTime}ms)`);
 
       if (filteredRecords.length === 0) {
@@ -833,6 +940,7 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
       zone: "Y",
       shown_quantity: inventory?.shown_quantity || undefined,
       passthrough: inventory?.passthrough || "",
+      rowRank: (inventory as unknown as { rowRank?: number | null })?.rowRank ?? null,
     } as CsvRow;
   });
 }
@@ -1006,6 +1114,14 @@ export async function* generateInventoryCsvStream(
     // (Event.find + ExclusionRules.find) inside every chunk iteration; for an
     // export with N chunks that was 2N redundant DB round-trips.
     const exclusionFilter = await buildExclusionFilter(eventMappingIds);
+    // Note: the dominated-listings rule needs to compare all rows in an
+    // event at once and does NOT apply on the streaming path. It runs on
+    // the non-streaming generateInventoryCsv() only. Warn if any events
+    // opted in while streaming so operators aren't surprised.
+    const dominatedEnabledStreaming = await loadDominatedListingsEnabledSet(eventMappingIds);
+    if (dominatedEnabledStreaming.size > 0) {
+      console.warn(`[CSV stream] dominated-listings enabled on ${dominatedEnabledStreaming.size} event(s) but streaming path bypasses this rule. Use non-streaming CSV to apply it.`);
+    }
 
     const CHUNK_SIZE = 10000;
     const idPipeline: PipelineStage[] = [

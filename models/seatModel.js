@@ -116,6 +116,13 @@ const consecutiveGroupSchema = new mongoose.Schema(
         type: String,
         required: true,
       },
+      // 0-based front-to-back row index within its section (from TM's
+      // SECTION.segments). null for GA/parking/lawn or when the map lookup
+      // did not resolve. Used by the dominated-listings exclusion rule.
+      rowRank: {
+        type: Number,
+        default: null,
+      },
       cost: {
         type: Number,
         required: true,
