@@ -123,6 +123,23 @@ const consecutiveGroupSchema = new mongoose.Schema(
         type: Number,
         default: null,
       },
+      // When the scraper first saw this listing (any type). Used to
+      // measure availability duration for the standard-drop 30-min hold.
+      firstSeenAt: {
+        type: Date,
+        default: null,
+      },
+      // Only set for STANDARD-tagged listings. While provisionalUntil
+      // is in the future, this listing is excluded from the CSV feed.
+      // Clears itself naturally once now() > provisionalUntil (30 min
+      // after firstSeenAt). If the listing disappears from TM before
+      // the hold ends, the delete flow removes it and Automatiq never
+      // sees it — prevents "sold before we could fulfill" cascades on
+      // hot-event standard drops.
+      provisionalUntil: {
+        type: Date,
+        default: null,
+      },
       cost: {
         type: Number,
         required: true,

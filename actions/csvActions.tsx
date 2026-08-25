@@ -72,6 +72,10 @@ interface CsvRow {
   // row index from TM's SECTION.segments; null when unknown or GA.
   // Used by the dominated-listings exclusion filter.
   rowRank?: number | null;
+  // Internal-only. If provisionalUntil is in the future, this is a
+  // standard drop still inside its 30-min hold and must NOT be emitted
+  // to the CSV. Cleared naturally after the hold expires.
+  provisionalUntil?: Date | string | null;
 }
 
 const csvColumns = [
@@ -289,6 +293,20 @@ export function applyDominatedListingsFilter(
   return { kept, dropped };
 }
 
+// Standard-drop hold filter. Hot events see newly-listed STANDARD
+// (primary) tickets sell out within minutes of appearing; if we push
+// those to Automatiq before they've proven staying power, we get
+// unfulfillable orders. The scraper stamps every new standard listing
+// with provisionalUntil = firstSeenAt + 30 min. This filter drops
+// rows whose provisionalUntil is still in the future.
+export function isStandardHoldActive(record: CsvRow, now: number = Date.now()): boolean {
+  const pu = record.provisionalUntil;
+  if (!pu) return false;
+  const t = typeof pu === 'string' || pu instanceof Date ? new Date(pu).getTime() : NaN;
+  if (!Number.isFinite(t)) return false;
+  return t > now;
+}
+
 const isBlockedVenueState = (record: CsvRow): boolean => {
   const v = (record.venue_name || '').trim().toLowerCase();
   return BLOCKED_STATES.some(s => v === s || v.endsWith(', ' + s) || v.endsWith(',' + s));
@@ -378,6 +396,8 @@ const CSV_PROJECTION = {
   'inventory.seatType': 1,
   'inventory.productType': 1,
   'inventory.rowRank': 1,
+  'inventory.firstSeenAt': 1,
+  'inventory.provisionalUntil': 1,
 } as const;
 
 // ── Global: stop events with seats <= threshold & clear their inventory ──
@@ -624,6 +644,7 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
             producedCount += processedBatch.length;
             for (const r of processedBatch) {
               if (isBlockedVenueState(r)) { excludedCount++; continue; }
+              if (isStandardHoldActive(r)) { excludedCount++; continue; }
               if (!exclusionFilter(r)) { excludedCount++; continue; }
               if (rowModeMinSeat && !rowModeMinSeat(r)) { excludedCount++; continue; }
               filteredRecords.push(r);
@@ -941,6 +962,7 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
       shown_quantity: inventory?.shown_quantity || undefined,
       passthrough: inventory?.passthrough || "",
       rowRank: (inventory as unknown as { rowRank?: number | null })?.rowRank ?? null,
+      provisionalUntil: (inventory as unknown as { provisionalUntil?: Date | string | null })?.provisionalUntil ?? null,
     } as CsvRow;
   });
 }
@@ -1208,6 +1230,7 @@ export async function* generateInventoryCsvStream(
           const filtered: CsvRow[] = [];
           for (const r of processedBatch) {
             if (isBlockedVenueState(r)) continue;
+            if (isStandardHoldActive(r)) continue;
             if (!exclusionFilter(r)) continue;
             if (minSeatFilter > 0) {
               if (minSeatFilterMode === 'section') {
