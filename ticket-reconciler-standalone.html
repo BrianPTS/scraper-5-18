@@ -1,0 +1,2689 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ticket Reconciler</title>
+<meta name="description" content="Match ticket purchases against card charges and see what does not line up." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+  rel="stylesheet"
+/>
+</head>
+<body>
+
+<style>
+  /* ---------------------------------------------------------------------
+     Palette: ledger ink. Indigo is the accent (interface), and the three
+     semantic colours — settled green, query amber, exposure red — are kept
+     off that hue so status never reads as decoration.
+     --------------------------------------------------------------------- */
+  :root {
+    --ground: #eff0f4;
+    --surface: #ffffff;
+    --surface-2: #f6f7fa;
+    --surface-3: #eceef4;
+    --line: #dfe1ec;
+    --line-strong: #c6c9dc;
+    --text: #14162a;
+    --muted: #5f6488;
+    --accent: #3a45c4;
+    --accent-ink: #ffffff;
+    --accent-wash: rgba(58, 69, 196, 0.09);
+    --ok: #0e7a50;
+    --ok-wash: rgba(14, 122, 80, 0.1);
+    --warn: #8f5e00;
+    --warn-wash: rgba(143, 94, 0, 0.11);
+    --bad: #b93529;
+    --bad-wash: rgba(185, 53, 41, 0.09);
+    --shadow: 0 1px 2px rgba(20, 22, 42, 0.05), 0 8px 24px rgba(20, 22, 42, 0.06);
+
+    --font-ui: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --radius: 10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0d0e16;
+      --surface: #161826;
+      --surface-2: #1c1f30;
+      --surface-3: #232741;
+      --line: #272b40;
+      --line-strong: #3a3f5c;
+      --text: #e8eaf6;
+      --muted: #9ba1c4;
+      --accent: #838cff;
+      --accent-ink: #10121d;
+      --accent-wash: rgba(131, 140, 255, 0.14);
+      --ok: #4cc48d;
+      --ok-wash: rgba(76, 196, 141, 0.14);
+      --warn: #e0a94a;
+      --warn-wash: rgba(224, 169, 74, 0.14);
+      --bad: #ff7f72;
+      --bad-wash: rgba(255, 127, 114, 0.14);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0d0e16;
+    --surface: #161826;
+    --surface-2: #1c1f30;
+    --surface-3: #232741;
+    --line: #272b40;
+    --line-strong: #3a3f5c;
+    --text: #e8eaf6;
+    --muted: #9ba1c4;
+    --accent: #838cff;
+    --accent-ink: #10121d;
+    --accent-wash: rgba(131, 140, 255, 0.14);
+    --ok: #4cc48d;
+    --ok-wash: rgba(76, 196, 141, 0.14);
+    --warn: #e0a94a;
+    --warn-wash: rgba(224, 169, 74, 0.14);
+    --bad: #ff7f72;
+    --bad-wash: rgba(255, 127, 114, 0.14);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+  [hidden] {
+    display: none !important;
+  }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: 1560px;
+    margin: 0 auto;
+    padding: 0 22px 72px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* ---------- statement header ---------- */
+
+  .masthead {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 22px 0 14px;
+    border-bottom: 2px solid var(--text);
+  }
+
+  .wordmark {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin: 0;
+  }
+
+  .standfirst {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  label.field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 10px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+
+  select,
+  input[type="search"],
+  input[type="number"] {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    padding: 7px 10px;
+  }
+
+  .btn {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    padding: 8px 13px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .btn:hover {
+    border-color: var(--accent);
+  }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  .btn.primary:hover {
+    filter: brightness(1.06);
+  }
+  .btn.quiet {
+    background: transparent;
+    border-color: transparent;
+    color: var(--muted);
+  }
+  .btn.quiet:hover {
+    color: var(--text);
+    border-color: var(--line-strong);
+  }
+  .btn.tiny {
+    font-size: 11.5px;
+    padding: 4px 9px;
+  }
+  .btn.danger {
+    color: var(--bad);
+    border-color: transparent;
+  }
+  .btn.danger:hover {
+    border-color: var(--bad);
+  }
+  .btn[disabled] {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  /* ---------- figures ---------- */
+
+  .band-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 20px 0 8px;
+  }
+
+  .figures {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+
+  .figure {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px 14px 13px;
+    position: relative;
+    overflow: hidden;
+  }
+  .figure .cap {
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .figure .amount {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    margin-top: 3px;
+  }
+  .figure .foot {
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .figure.flag::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+  }
+  .figure.flag.ok::before {
+    background: var(--ok);
+  }
+  .figure.flag.warn::before {
+    background: var(--warn);
+  }
+  .figure.flag.bad::before {
+    background: var(--bad);
+  }
+  .figure.flag.ok .amount {
+    color: var(--ok);
+  }
+  .figure.flag.warn .amount {
+    color: var(--warn);
+  }
+  .figure.flag.bad .amount {
+    color: var(--bad);
+  }
+
+  /* ---------- ledger sections ---------- */
+
+  .sections {
+    display: flex;
+    gap: 2px;
+    margin: 22px 0 0;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--line-strong);
+  }
+
+  .section-tab {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    color: var(--muted);
+    padding: 9px 13px;
+    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    margin-bottom: -1px;
+  }
+  .section-tab:hover {
+    color: var(--text);
+  }
+  .section-tab[aria-selected="true"] {
+    background: var(--surface);
+    border-color: var(--line-strong);
+    border-bottom-color: var(--surface);
+    color: var(--text);
+  }
+  .section-tab .n {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 20px;
+    background: var(--surface-3);
+    color: var(--muted);
+  }
+  .section-tab[aria-selected="true"] .n {
+    background: var(--accent-wash);
+    color: var(--accent);
+  }
+
+  .filterbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 14px;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-top: none;
+  }
+  .filterbar input[type="search"] {
+    flex: 1;
+    max-width: 420px;
+  }
+  .tally {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ledger {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    overflow-x: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead th {
+    text-align: left;
+    padding: 8px 12px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line-strong);
+    font-size: 10px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  thead th:hover {
+    color: var(--text);
+  }
+  tbody td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+  tbody tr:hover {
+    background: var(--surface-2);
+  }
+  th.num,
+  td.num {
+    text-align: right;
+  }
+  td.num,
+  td.mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    font-size: 12.5px;
+  }
+  td.act {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .lead {
+    font-weight: 600;
+  }
+  .sub {
+    color: var(--muted);
+    font-size: 11.5px;
+    margin-top: 1px;
+  }
+  .why {
+    color: var(--muted);
+    font-size: 12px;
+    max-width: 400px;
+  }
+
+  .stamp {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 4px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .stamp.exact {
+    color: var(--ok);
+    border-color: var(--ok);
+    background: var(--ok-wash);
+  }
+  .stamp.likely {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-wash);
+  }
+  .stamp.review,
+  .stamp.ambiguous {
+    color: var(--warn);
+    border-color: var(--warn);
+    background: var(--warn-wash);
+  }
+  .stamp.manual {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: transparent;
+  }
+  .stamp.bad {
+    color: var(--bad);
+    border-color: var(--bad);
+    background: var(--bad-wash);
+  }
+  .stamp.plain {
+    color: var(--muted);
+    border-color: var(--line-strong);
+  }
+
+  .pos {
+    color: var(--ok);
+  }
+  .neg {
+    color: var(--bad);
+  }
+
+  /* ---------- empty / onboarding ---------- */
+
+  .empty {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    padding: 54px 22px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .empty h3 {
+    margin: 0 0 6px;
+    color: var(--text);
+    font-size: 15px;
+  }
+
+  .welcome {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    padding: 30px 26px;
+    margin-top: 22px;
+    box-shadow: var(--shadow);
+  }
+  .welcome h2 {
+    margin: 0 0 8px;
+    font-size: 19px;
+    text-wrap: balance;
+  }
+  .welcome p {
+    margin: 0 0 18px;
+    color: var(--muted);
+    max-width: 62ch;
+  }
+  .welcome ol {
+    margin: 0 0 20px;
+    padding-left: 20px;
+    color: var(--muted);
+    max-width: 62ch;
+  }
+  .welcome li {
+    margin-bottom: 5px;
+  }
+  .welcome li b {
+    color: var(--text);
+  }
+  .welcome .cta {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  /* ---------- settings ---------- */
+
+  .settings {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    margin-top: 16px;
+  }
+  .settings h2 {
+    font-size: 13px;
+    margin: 0 0 4px;
+    font-family: var(--font-mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .settings p {
+    color: var(--muted);
+    font-size: 12.5px;
+    margin: 0 0 16px;
+    max-width: 68ch;
+  }
+  .settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+    align-items: end;
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .settings-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+  }
+
+  /* ---------- modal ---------- */
+
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 11, 20, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 60;
+  }
+  .modal-card {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    width: min(920px, 100%);
+    max-height: 86vh;
+    overflow: auto;
+    box-shadow: var(--shadow);
+  }
+  .modal-card > header {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-card h2 {
+    margin: 0;
+    font-size: 15px;
+  }
+  .modal-body {
+    padding: 16px 18px;
+  }
+  .facts {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 13px 15px;
+    margin-bottom: 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+    gap: 10px 18px;
+  }
+  .facts div span {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .facts div b {
+    font-weight: 500;
+    font-size: 13px;
+    word-break: break-word;
+  }
+  .modal .ledger {
+    border-top: 1px solid var(--line-strong);
+    border-radius: 8px;
+  }
+  textarea.csv {
+    width: 100%;
+    height: 320px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px;
+  }
+
+  /* ---------- drop + toasts ---------- */
+
+  .dropzone {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    background: var(--accent-wash);
+    backdrop-filter: blur(2px);
+    border: 3px dashed var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    text-align: center;
+  }
+  .dropzone strong {
+    display: block;
+    font-size: 21px;
+    color: var(--text);
+  }
+  .dropzone span {
+    color: var(--muted);
+  }
+
+  .toasts {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 120;
+    max-width: 420px;
+  }
+  .toast {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12.5px;
+    box-shadow: var(--shadow);
+    animation: rise 0.16s ease-out;
+  }
+  .toast.ok {
+    border-left-color: var(--ok);
+  }
+  .toast.bad {
+    border-left-color: var(--bad);
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .footnote {
+    margin-top: 26px;
+    color: var(--muted);
+    font-size: 11.5px;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    max-width: 78ch;
+  }
+
+  @media (max-width: 640px) {
+    .shell {
+      padding: 0 12px 60px;
+    }
+    .figure .amount {
+      font-size: 19px;
+    }
+  }
+</style>
+
+<div class="shell">
+  <header class="masthead">
+    <div>
+      <h1 class="wordmark">Ticket Reconciler</h1>
+      <p class="standfirst" id="standfirst">Nothing imported yet</p>
+    </div>
+    <div class="controls">
+      <label class="field">
+        Day
+        <select id="day-select" aria-label="Day to show"></select>
+      </label>
+      <button class="btn primary" id="import-btn">Import CSV</button>
+      <button class="btn" id="export-btn">Export</button>
+      <button class="btn quiet" id="settings-btn" aria-expanded="false">Rules</button>
+    </div>
+  </header>
+
+  <input id="file-input" type="file" accept=".csv,text/csv" multiple hidden />
+
+  <section class="welcome" id="welcome">
+    <h2>Drop in today's two exports and see what does not line up.</h2>
+    <p>
+      One file of purchases, one file of card transactions. Everything is matched inside this browser
+      tab — no upload, no server, no account. Your card and buyer details never leave this device.
+    </p>
+    <ol>
+      <li><b>Import CSV</b>, or drag both files anywhere onto this page.</li>
+      <li>The file type is worked out from its column headers — you never say which is which.</li>
+      <li>Come back tomorrow and import again. Rows update in place instead of duplicating.</li>
+    </ol>
+    <div class="cta">
+      <button class="btn primary" id="welcome-import">Import CSV</button>
+      <button class="btn" id="load-sample">Load sample data</button>
+    </div>
+  </section>
+
+  <section class="settings" id="settings" hidden>
+    <h2>Matching rules</h2>
+    <p>
+      A purchase and a charge are paired when the amounts agree, the timestamps fall inside the
+      window, and the card's last four digits do not contradict each other. Two different cards are
+      never paired, however well the amount and time agree.
+    </p>
+    <div class="settings-grid">
+      <label class="field">
+        Amount tolerance ($)
+        <input id="opt-amountTolerance" type="number" step="0.01" min="0" />
+      </label>
+      <label class="field">
+        Time window (minutes)
+        <input id="opt-timeWindowMinutes" type="number" step="5" min="1" />
+      </label>
+      <label class="field">
+        Charge clock offset (minutes)
+        <input id="opt-chargeTimeOffsetMinutes" type="number" step="15" />
+      </label>
+      <label class="check">
+        <input id="opt-requireLast4" type="checkbox" />
+        Require last-4 match
+      </label>
+    </div>
+    <div class="settings-actions">
+      <button class="btn primary" id="settings-apply">Apply</button>
+      <button class="btn quiet" id="settings-close">Close</button>
+      <button class="btn danger" id="clear-btn">Clear all data</button>
+    </div>
+  </section>
+
+  <div id="dashboard" hidden>
+    <p class="band-label">The two sides</p>
+    <div class="figures" id="figures-primary"></div>
+
+    <p class="band-label">Exceptions</p>
+    <div class="figures" id="figures-exceptions"></div>
+
+    <div class="sections" id="sections" role="tablist"></div>
+    <div class="filterbar">
+      <input id="search" type="search" placeholder="Filter by event, card, account, amount, id…" />
+      <span class="tally" id="tally"></span>
+    </div>
+    <div id="view"></div>
+  </div>
+
+  <p class="footnote" id="footnote">
+    Everything stays in this browser. Imported rows are kept in this tab's local storage for this
+    artifact only — clearing your browser's site data removes them, and re-importing the exports
+    brings them straight back.
+  </p>
+</div>
+
+<div class="dropzone" id="dropzone" hidden>
+  <div>
+    <strong>Drop CSV exports</strong>
+    <span>Purchases and card transactions are told apart automatically</span>
+  </div>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <header>
+      <h2 id="modal-title">Details</h2>
+      <button class="btn quiet" id="modal-close" aria-label="Close">✕</button>
+    </header>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+  (function () {
+    'use strict';
+
+    // =====================================================================
+    // 1. CSV — RFC 4180, tolerant of quoting, CRLF and a BOM
+    // =====================================================================
+
+    function parseCsvTable(text) {
+      if (typeof text !== 'string') return [];
+      let input = text;
+      if (input.charCodeAt(0) === 0xfeff) input = input.slice(1);
+
+      const table = [];
+      let row = [];
+      let field = '';
+      let inQuotes = false;
+      let started = false;
+
+      for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (input[i + 1] === '"') {
+              field += '"';
+              i++;
+            } else inQuotes = false;
+          } else field += ch;
+          continue;
+        }
+        if (ch === '"') {
+          inQuotes = true;
+          started = true;
+        } else if (ch === ',') {
+          row.push(field);
+          field = '';
+          started = true;
+        } else if (ch === '\n' || ch === '\r') {
+          if (ch === '\r' && input[i + 1] === '\n') i++;
+          row.push(field);
+          table.push(row);
+          row = [];
+          field = '';
+          started = false;
+        } else {
+          field += ch;
+          started = true;
+        }
+      }
+      if (started || field !== '' || row.length > 0) {
+        row.push(field);
+        table.push(row);
+      }
+      return table;
+    }
+
+    function parseCsv(text) {
+      const table = parseCsvTable(text);
+      if (!table.length) return { headers: [], rows: [] };
+      const headers = table[0].map(function (h) {
+        return h.trim();
+      });
+      const rows = [];
+      for (let i = 1; i < table.length; i++) {
+        const cells = table[i];
+        if (cells.length === 1 && cells[0].trim() === '') continue;
+        const row = {};
+        for (let c = 0; c < headers.length; c++) row[headers[c]] = cells[c] === undefined ? '' : cells[c];
+        rows.push(row);
+      }
+      return { headers: headers, rows: rows };
+    }
+
+    function toCsv(headers, rows) {
+      const esc = function (v) {
+        const s = v === null || v === undefined ? '' : String(v);
+        return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const lines = [headers.map(esc).join(',')];
+      rows.forEach(function (r) {
+        lines.push(r.map(esc).join(','));
+      });
+      return lines.join('\n') + '\n';
+    }
+
+    // =====================================================================
+    // 2. Normalize — two exports into one shape
+    //
+    // Timestamps are wall-clock readings, not instants. The purchase feed
+    // writes 16:50:13 and the card feed writes 04:50:16PM for the same
+    // event, so they are parsed to the same value and never timezone-shifted.
+    // =====================================================================
+
+    const PURCHASE_SIGNATURE = ['pos_po_id', 'payment_instrument_last_four', 'purchase_date'];
+    const CHARGE_SIGNATURE = ['Last 4', 'Authorization Date (UTC)', 'Card Name'];
+
+    function detectKind(headers) {
+      const set = new Set(
+        headers.map(function (h) {
+          return h.trim();
+        }),
+      );
+      const p = PURCHASE_SIGNATURE.filter(function (h) {
+        return set.has(h);
+      }).length;
+      const c = CHARGE_SIGNATURE.filter(function (h) {
+        return set.has(h);
+      }).length;
+      if (p >= 2 && p > c) return 'purchases';
+      if (c >= 2 && c > p) return 'charges';
+      if (set.has('pos_po_id') || set.has('event_name')) return 'purchases';
+      if (set.has('Last 4') || set.has('Decline Reason')) return 'charges';
+      return null;
+    }
+
+    function parseTimestamp(value) {
+      if (!value) return null;
+      const raw = String(value).trim();
+      if (!raw) return null;
+      const m = raw.match(
+        /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?)?/,
+      );
+      if (!m) {
+        const fallback = Date.parse(raw);
+        return isNaN(fallback) ? null : fallback;
+      }
+      let hour = m[4] ? Number(m[4]) : 0;
+      const mer = m[7];
+      if (mer) {
+        const up = mer.toUpperCase();
+        if (up === 'PM' && hour < 12) hour += 12;
+        if (up === 'AM' && hour === 12) hour = 0;
+      }
+      return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), hour, Number(m[5] || 0), Number(m[6] || 0));
+    }
+
+    function formatTimestamp(ms) {
+      if (ms === null || ms === undefined || isNaN(ms)) return '';
+      return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    function businessDay(ms) {
+      if (ms === null || ms === undefined || isNaN(ms)) return '';
+      return new Date(ms).toISOString().slice(0, 10);
+    }
+
+    function parseAmount(value) {
+      if (value === null || value === undefined) return null;
+      if (typeof value === 'number') return isFinite(value) ? value : null;
+      let s = String(value).trim();
+      if (!s) return null;
+      let negative = false;
+      if (/^\(.*\)$/.test(s)) {
+        negative = true;
+        s = s.slice(1, -1);
+      }
+      s = s.replace(/[$,\s]/g, '');
+      if (s.charAt(0) === '-') {
+        negative = true;
+        s = s.slice(1);
+      }
+      const n = Number(s);
+      if (!isFinite(n)) return null;
+      return negative ? -n : n;
+    }
+
+    function normalizeLast4(value) {
+      const digits = String(value === null || value === undefined ? '' : value).replace(/\D/g, '');
+      if (!digits) return '';
+      const tail = digits.slice(-4);
+      return tail.length === 4 ? tail : ('0000' + tail).slice(-4);
+    }
+
+    function clean(v) {
+      return String(v === null || v === undefined ? '' : v).trim();
+    }
+
+    function normalizePurchases(rows) {
+      const out = [];
+      rows.forEach(function (row) {
+        const id = clean(row.id) || clean(row.pos_po_id) || clean(row.remote_id);
+        if (!id) return;
+        const paymentAmount = parseAmount(row.payment_amount);
+        const override = parseAmount(row.original_amount_override);
+        const original = parseAmount(row.original_amount);
+        const amount = paymentAmount !== null ? paymentAmount : override !== null ? override : original !== null ? original : 0;
+        const purchasedAt = parseTimestamp(row.purchase_date);
+        out.push({
+          kind: 'purchase',
+          id: id,
+          poId: clean(row.pos_po_id),
+          account: clean(row.username),
+          event: clean(row.event_name),
+          eventDate: parseTimestamp(row.event_date),
+          venue: clean(row.venue_name),
+          seats: clean(row.ticket_details),
+          qty: Number(clean(row.qty)) || 0,
+          stockType: clean(row.stock_type),
+          tags: clean(row.internal_tags),
+          brand: clean(row.payment_instrument_brand) || clean(row.payment_type),
+          last4: normalizeLast4(row.payment_instrument_last_four),
+          amount: amount,
+          refundedAmount: parseAmount(row.refunded_amount) || 0,
+          refundStatus: clean(row.refund_status),
+          status: clean(row.status),
+          purchasedAt: purchasedAt,
+          day: businessDay(purchasedAt),
+        });
+      });
+      return out;
+    }
+
+    const NON_CAPTURING = new Set(['declined', 'reversed', 'expired', 'canceled', 'cancelled']);
+
+    function normalizeCharges(rows) {
+      const out = [];
+      rows.forEach(function (row) {
+        const id = clean(row.Id) || clean(row['Reference Number']);
+        if (!id) return;
+        const signed = parseAmount(row.Amount) || 0;
+        const postedAt = parseTimestamp(row['Date (UTC)']);
+        const authorizedAt = parseTimestamp(row['Authorization Date (UTC)']);
+        // A settlement posts hours late but carries the authorization time —
+        // that is the stamp the purchase feed agrees with.
+        const occurredAt = authorizedAt !== null ? authorizedAt : postedAt;
+        const type = clean(row.Type).toLowerCase();
+        const status = clean(row.Status).toLowerCase();
+        out.push({
+          kind: 'charge',
+          id: id,
+          description: clean(row.Description),
+          signedAmount: signed,
+          amount: Math.abs(signed),
+          direction: signed > 0 ? 'credit' : 'debit',
+          type: type,
+          status: status,
+          declineReason: clean(row['Decline Reason']),
+          last4: normalizeLast4(row['Last 4']),
+          cardName: clean(row['Card Name']),
+          cardGroup: clean(row['Card Group Name']),
+          orderId: clean(row['Order Id']),
+          referenceNumber: clean(row['Reference Number']),
+          memo: clean(row.Memo),
+          postedAt: postedAt,
+          authorizedAt: authorizedAt,
+          occurredAt: occurredAt,
+          day: businessDay(occurredAt),
+          capturing: !(type === 'card_decline' || NON_CAPTURING.has(status)),
+        });
+      });
+      return out;
+    }
+
+    function normalizeParsed(parsed) {
+      const kind = detectKind(parsed.headers);
+      if (kind === 'purchases') return { kind: kind, records: normalizePurchases(parsed.rows) };
+      if (kind === 'charges') return { kind: kind, records: normalizeCharges(parsed.rows) };
+      throw new Error(
+        'This does not look like either export. A purchase file needs a "pos_po_id" column; a card file needs a "Last 4" column.',
+      );
+    }
+
+    // =====================================================================
+    // 3. The matching engine
+    // =====================================================================
+
+    const DEFAULT_OPTIONS = {
+      amountTolerance: 0,
+      timeWindowMinutes: 240,
+      chargeTimeOffsetMinutes: 0,
+      requireLast4: false,
+      zeroAmountThreshold: 0,
+    };
+
+    const MINUTE = 60000;
+    const SCORE = { last4Match: 10000, exactAmount: 1000, settled: 50, minutePenalty: 1 };
+
+    function toCents(a) {
+      return Math.round((Number(a) || 0) * 100);
+    }
+
+    function chargeTime(charge, opts) {
+      if (charge.occurredAt === null || charge.occurredAt === undefined) return null;
+      return charge.occurredAt + opts.chargeTimeOffsetMinutes * MINUTE;
+    }
+
+    function money(a) {
+      return '$' + (Number(a) || 0).toFixed(2);
+    }
+
+    function gradeConfidence(o) {
+      const minutes = o.deltaMinutes === null ? Infinity : Math.abs(o.deltaMinutes);
+      if (o.amountDiff !== 0) return 'review';
+      if (o.last4Agree && minutes <= 30) return 'exact';
+      if (o.last4Agree || minutes <= 10) return 'likely';
+      return 'review';
+    }
+
+    function buildMatch(purchase, charge, opts, extra) {
+      extra = extra || {};
+      const delta =
+        purchase.purchasedAt !== null && charge.occurredAt !== null
+          ? chargeTime(charge, opts) - purchase.purchasedAt
+          : null;
+      const deltaMinutes = delta === null ? null : delta / MINUTE;
+      const amountDiff = Number((charge.amount - purchase.amount).toFixed(2));
+      const last4Agree = Boolean(purchase.last4 && charge.last4 && purchase.last4 === charge.last4);
+      return {
+        id: purchase.id + '::' + charge.id,
+        purchase: purchase,
+        charge: charge,
+        delta: delta,
+        deltaMinutes: deltaMinutes,
+        amountDiff: amountDiff,
+        last4Agree: last4Agree,
+        confidence:
+          extra.method === 'manual'
+            ? 'manual'
+            : gradeConfidence({ last4Agree: last4Agree, amountDiff: amountDiff, deltaMinutes: deltaMinutes }),
+        method: extra.method || 'auto',
+        ambiguous: Boolean(extra.ambiguous),
+        note: extra.note || '',
+      };
+    }
+
+    function explainUnmatchedPurchase(purchase, charges, declines, reversals, opts) {
+      const cents = toCents(purchase.amount);
+      const tol = Math.round(opts.amountTolerance * 100);
+      const sameAmount = charges.filter(function (c) {
+        return Math.abs(toCents(c.amount) - cents) <= tol;
+      });
+
+      if (!sameAmount.length) {
+        const dead = declines.concat(reversals).find(function (c) {
+          return toCents(c.amount) === cents;
+        });
+        if (dead) {
+          return dead.type === 'card_decline'
+            ? 'A ' + money(purchase.amount) + ' charge on card ' + dead.last4 + ' was DECLINED (' +
+                (dead.declineReason || 'no reason given') + ') — this purchase may not be paid for.'
+            : 'A matching ' + money(purchase.amount) + ' authorization on card ' + dead.last4 + ' was reversed.';
+        }
+        return 'No card charge for this amount has been imported yet.';
+      }
+
+      const sameCard = sameAmount.filter(function (c) {
+        return !purchase.last4 || !c.last4 || c.last4 === purchase.last4;
+      });
+      if (!sameCard.length) {
+        return 'Charges exist for ' + money(purchase.amount) + ' but all are on different cards (purchase used ' + purchase.last4 + ').';
+      }
+      const inWindow = sameCard.filter(function (c) {
+        return (
+          purchase.purchasedAt !== null &&
+          c.occurredAt !== null &&
+          Math.abs(chargeTime(c, opts) - purchase.purchasedAt) <= opts.timeWindowMinutes * MINUTE
+        );
+      });
+      if (!inWindow.length) {
+        return 'A ' + money(purchase.amount) + ' charge exists on this card but outside the ' + opts.timeWindowMinutes + '-minute window.';
+      }
+      return 'A candidate charge exists but was claimed by a closer-matching purchase.';
+    }
+
+    function explainUnmatchedCharge(charge, purchases, opts) {
+      const cents = toCents(charge.amount);
+      const tol = Math.round(opts.amountTolerance * 100);
+      const sameAmount = purchases.filter(function (p) {
+        return Math.abs(toCents(p.amount) - cents) <= tol;
+      });
+      if (!sameAmount.length) {
+        return 'No purchase for this amount has been imported — either the purchase feed is behind, or this charge is not a ticket buy.';
+      }
+      const sameCard = sameAmount.filter(function (p) {
+        return !p.last4 || !charge.last4 || p.last4 === charge.last4;
+      });
+      if (!sameCard.length) return 'Purchases exist for ' + money(charge.amount) + ' but none on card ' + charge.last4 + '.';
+      return 'A candidate purchase exists but was claimed by a closer-matching charge.';
+    }
+
+    function rankChargesFor(purchase, charges, taken, opts) {
+      return charges
+        .filter(function (c) {
+          return !taken.has(c.id);
+        })
+        .map(function (c) {
+          return {
+            id: c.id,
+            description: c.description,
+            cardName: c.cardName,
+            last4: c.last4,
+            amount: c.amount,
+            occurredAt: c.occurredAt,
+            status: c.status,
+            amountDiff: Number((c.amount - purchase.amount).toFixed(2)),
+            deltaMinutes:
+              purchase.purchasedAt !== null && c.occurredAt !== null
+                ? (chargeTime(c, opts) - purchase.purchasedAt) / MINUTE
+                : null,
+            last4Agree: Boolean(purchase.last4 && c.last4 && purchase.last4 === c.last4),
+          };
+        })
+        .sort(function (a, b) {
+          return (
+            Math.abs(a.amountDiff) - Math.abs(b.amountDiff) ||
+            Number(b.last4Agree) - Number(a.last4Agree) ||
+            Math.abs(a.deltaMinutes === null ? Infinity : a.deltaMinutes) -
+              Math.abs(b.deltaMinutes === null ? Infinity : b.deltaMinutes)
+          );
+        })
+        .slice(0, 6);
+    }
+
+    function rankPurchasesFor(charge, purchases, taken, opts) {
+      return purchases
+        .filter(function (p) {
+          return !taken.has(p.id);
+        })
+        .map(function (p) {
+          return {
+            id: p.id,
+            event: p.event,
+            account: p.account,
+            last4: p.last4,
+            amount: p.amount,
+            purchasedAt: p.purchasedAt,
+            poId: p.poId,
+            amountDiff: Number((charge.amount - p.amount).toFixed(2)),
+            deltaMinutes:
+              p.purchasedAt !== null && charge.occurredAt !== null
+                ? (chargeTime(charge, opts) - p.purchasedAt) / MINUTE
+                : null,
+            last4Agree: Boolean(p.last4 && charge.last4 && p.last4 === charge.last4),
+          };
+        })
+        .sort(function (a, b) {
+          return (
+            Math.abs(a.amountDiff) - Math.abs(b.amountDiff) ||
+            Number(b.last4Agree) - Number(a.last4Agree) ||
+            Math.abs(a.deltaMinutes === null ? Infinity : a.deltaMinutes) -
+              Math.abs(b.deltaMinutes === null ? Infinity : b.deltaMinutes)
+          );
+        })
+        .slice(0, 6);
+    }
+
+    function sum(rows, pick) {
+      return Number(
+        rows
+          .reduce(function (acc, row) {
+            return acc + (pick(row) || 0);
+          }, 0)
+          .toFixed(2),
+      );
+    }
+
+    function buildTotals(b) {
+      const matchedPurchaseTotal = sum(b.matches, function (m) {
+        return m.purchase.amount;
+      });
+      const matchedChargeTotal = sum(b.matches, function (m) {
+        return m.charge.amount;
+      });
+      const unmatchedPurchaseTotal = sum(b.unmatchedPurchases, function (p) {
+        return p.amount;
+      });
+      const unmatchedChargeTotal = sum(b.unmatchedCharges, function (c) {
+        return c.amount;
+      });
+      const captured = b.charges.filter(function (c) {
+        return c.capturing && c.direction === 'debit';
+      });
+      const denominator = b.matches.length + b.unmatchedPurchases.length + b.unmatchedCharges.length;
+      return {
+        purchaseCount: b.purchases.length,
+        purchaseTotal: sum(b.purchases, function (p) {
+          return p.amount;
+        }),
+        chargeCount: captured.length,
+        chargeTotal: sum(captured, function (c) {
+          return c.amount;
+        }),
+        matchedCount: b.matches.length,
+        matchedPurchaseTotal: matchedPurchaseTotal,
+        matchedChargeTotal: matchedChargeTotal,
+        matchedVariance: Number((matchedChargeTotal - matchedPurchaseTotal).toFixed(2)),
+        unmatchedPurchaseCount: b.unmatchedPurchases.length,
+        unmatchedPurchaseTotal: unmatchedPurchaseTotal,
+        unmatchedChargeCount: b.unmatchedCharges.length,
+        unmatchedChargeTotal: unmatchedChargeTotal,
+        netExposure: Number((unmatchedChargeTotal - unmatchedPurchaseTotal).toFixed(2)),
+        declineCount: b.declines.length,
+        declineTotal: sum(b.declines, function (c) {
+          return c.amount;
+        }),
+        reversalCount: b.reversals.length,
+        reversalTotal: sum(b.reversals, function (c) {
+          return c.amount;
+        }),
+        creditCount: b.credits.length,
+        creditTotal: sum(b.credits, function (c) {
+          return c.amount;
+        }),
+        zeroAmountCount: b.zeroAmountPurchases.length,
+        needsReviewCount: b.matches.filter(function (m) {
+          return m.confidence === 'review' || m.ambiguous;
+        }).length,
+        matchRate: denominator === 0 ? 0 : Number(((b.matches.length / denominator) * 100).toFixed(1)),
+      };
+    }
+
+    function reconcile(input) {
+      const opts = Object.assign({}, DEFAULT_OPTIONS, input.options || {});
+      const purchases = input.purchases || [];
+      const charges = input.charges || [];
+      const overrides = input.overrides || {};
+      const links = overrides.links || [];
+      const ignoredPurchases = new Set(overrides.ignoredPurchases || []);
+      const ignoredCharges = new Set(overrides.ignoredCharges || []);
+
+      const purchaseById = new Map(
+        purchases.map(function (p) {
+          return [p.id, p];
+        }),
+      );
+      const chargeById = new Map(
+        charges.map(function (c) {
+          return [c.id, c];
+        }),
+      );
+
+      const matches = [];
+      const takenPurchases = new Set();
+      const takenCharges = new Set();
+
+      // 1. Manual links win outright.
+      links.forEach(function (link) {
+        const p = purchaseById.get(link.purchaseId);
+        const c = chargeById.get(link.chargeId);
+        if (!p || !c) return;
+        if (takenPurchases.has(p.id) || takenCharges.has(c.id)) return;
+        takenPurchases.add(p.id);
+        takenCharges.add(c.id);
+        matches.push(buildMatch(p, c, opts, { method: 'manual', note: link.note }));
+      });
+
+      // 2. Bucket what can never auto-match.
+      const zeroAmountPurchases = [];
+      const eligiblePurchases = [];
+      purchases.forEach(function (p) {
+        if (takenPurchases.has(p.id) || ignoredPurchases.has(p.id)) return;
+        if (p.amount <= opts.zeroAmountThreshold) zeroAmountPurchases.push(p);
+        else eligiblePurchases.push(p);
+      });
+
+      const declines = [];
+      const reversals = [];
+      const credits = [];
+      const eligibleCharges = [];
+      charges.forEach(function (c) {
+        if (takenCharges.has(c.id) || ignoredCharges.has(c.id)) return;
+        if (c.type === 'card_decline' || c.status === 'declined') declines.push(c);
+        else if (!c.capturing) reversals.push(c);
+        else if (c.direction === 'credit') credits.push(c);
+        else eligibleCharges.push(c);
+      });
+
+      // 3. Candidates: amounts agree, inside the window, cards do not conflict.
+      const windowMs = opts.timeWindowMinutes * MINUTE;
+      const toleranceCents = Math.round(opts.amountTolerance * 100);
+      const byCents = new Map();
+      eligibleCharges.forEach(function (c) {
+        const cents = toCents(c.amount);
+        if (!byCents.has(cents)) byCents.set(cents, []);
+        byCents.get(cents).push(c);
+      });
+
+      const candidates = [];
+      eligiblePurchases.forEach(function (p) {
+        const pCents = toCents(p.amount);
+        const pool =
+          toleranceCents === 0
+            ? byCents.get(pCents) || []
+            : eligibleCharges.filter(function (c) {
+                return Math.abs(toCents(c.amount) - pCents) <= toleranceCents;
+              });
+
+        pool.forEach(function (c) {
+          if (p.purchasedAt === null || c.occurredAt === null) return;
+          const delta = chargeTime(c, opts) - p.purchasedAt;
+          if (Math.abs(delta) > windowMs) return;
+
+          const last4Agree = Boolean(p.last4 && c.last4 && p.last4 === c.last4);
+          const last4Conflict = Boolean(p.last4 && c.last4 && p.last4 !== c.last4);
+          if (last4Conflict) return; // different card: never the same transaction
+          if (opts.requireLast4 && !last4Agree) return;
+
+          let score = -Math.abs(delta / MINUTE) * SCORE.minutePenalty;
+          if (last4Agree) score += SCORE.last4Match;
+          if (Math.abs(toCents(c.amount) - pCents) === 0) score += SCORE.exactAmount;
+          if (c.status === 'settled') score += SCORE.settled;
+          candidates.push({ purchase: p, charge: c, score: score, delta: delta });
+        });
+      });
+
+      candidates.sort(function (a, b) {
+        return (
+          b.score - a.score ||
+          Math.abs(a.delta) - Math.abs(b.delta) ||
+          String(a.purchase.id).localeCompare(String(b.purchase.id)) ||
+          String(a.charge.id).localeCompare(String(b.charge.id))
+        );
+      });
+
+      // Flag a purchase whose best candidate had an equal-scoring rival.
+      const best = new Map();
+      candidates.forEach(function (cand) {
+        const prev = best.get(cand.purchase.id);
+        if (!prev || cand.score > prev.score) best.set(cand.purchase.id, { score: cand.score, count: 1 });
+        else if (cand.score === prev.score) prev.count += 1;
+      });
+
+      candidates.forEach(function (cand) {
+        if (takenPurchases.has(cand.purchase.id) || takenCharges.has(cand.charge.id)) return;
+        takenPurchases.add(cand.purchase.id);
+        takenCharges.add(cand.charge.id);
+        const rivals = best.get(cand.purchase.id);
+        matches.push(
+          buildMatch(cand.purchase, cand.charge, opts, {
+            method: 'auto',
+            ambiguous: Boolean(rivals && rivals.count > 1),
+          }),
+        );
+      });
+
+      const unmatchedPurchases = eligiblePurchases
+        .filter(function (p) {
+          return !takenPurchases.has(p.id);
+        })
+        .map(function (p) {
+          return Object.assign({}, p, {
+            reason: explainUnmatchedPurchase(p, eligibleCharges, declines, reversals, opts),
+            candidates: rankChargesFor(p, eligibleCharges, takenCharges, opts),
+          });
+        });
+
+      const unmatchedCharges = eligibleCharges
+        .filter(function (c) {
+          return !takenCharges.has(c.id);
+        })
+        .map(function (c) {
+          return Object.assign({}, c, {
+            reason: explainUnmatchedCharge(c, eligiblePurchases, opts),
+            candidates: rankPurchasesFor(c, eligiblePurchases, takenPurchases, opts),
+          });
+        });
+
+      const byTimeDesc = function (key) {
+        return function (a, b) {
+          return (b[key] || 0) - (a[key] || 0);
+        };
+      };
+      matches.sort(function (a, b) {
+        return (b.purchase.purchasedAt || 0) - (a.purchase.purchasedAt || 0);
+      });
+      unmatchedPurchases.sort(byTimeDesc('purchasedAt'));
+      unmatchedCharges.sort(byTimeDesc('occurredAt'));
+
+      const bundle = {
+        matches: matches,
+        unmatchedPurchases: unmatchedPurchases,
+        unmatchedCharges: unmatchedCharges,
+        declines: declines.slice().sort(byTimeDesc('occurredAt')),
+        reversals: reversals.slice().sort(byTimeDesc('occurredAt')),
+        credits: credits.slice().sort(byTimeDesc('occurredAt')),
+        zeroAmountPurchases: zeroAmountPurchases.slice().sort(byTimeDesc('purchasedAt')),
+      };
+
+      return Object.assign({ options: opts }, bundle, {
+        totals: buildTotals(Object.assign({ purchases: purchases, charges: charges }, bundle)),
+      });
+    }
+
+    // Day scoping runs on the *results*, so a purchase at 23:58 whose
+    // authorization lands at 00:02 stays one transaction instead of two orphans.
+    function scopeToDay(report, day) {
+      const onDay = function (ms) {
+        return businessDay(ms) === day;
+      };
+      const matches = report.matches.filter(function (m) {
+        return onDay(m.purchase.purchasedAt) || onDay(m.charge.occurredAt);
+      });
+      const unmatchedPurchases = report.unmatchedPurchases.filter(function (p) {
+        return onDay(p.purchasedAt);
+      });
+      const unmatchedCharges = report.unmatchedCharges.filter(function (c) {
+        return onDay(c.occurredAt);
+      });
+      const declines = report.declines.filter(function (c) {
+        return onDay(c.occurredAt);
+      });
+      const reversals = report.reversals.filter(function (c) {
+        return onDay(c.occurredAt);
+      });
+      const credits = report.credits.filter(function (c) {
+        return onDay(c.occurredAt);
+      });
+      const zeroAmountPurchases = report.zeroAmountPurchases.filter(function (p) {
+        return onDay(p.purchasedAt);
+      });
+
+      const dayPurchases = matches
+        .filter(function (m) {
+          return onDay(m.purchase.purchasedAt);
+        })
+        .map(function (m) {
+          return m.purchase;
+        })
+        .concat(unmatchedPurchases, zeroAmountPurchases);
+
+      const dayCharges = matches
+        .filter(function (m) {
+          return onDay(m.charge.occurredAt);
+        })
+        .map(function (m) {
+          return m.charge;
+        })
+        .concat(unmatchedCharges, declines, reversals, credits);
+
+      const bundle = {
+        matches: matches,
+        unmatchedPurchases: unmatchedPurchases,
+        unmatchedCharges: unmatchedCharges,
+        declines: declines,
+        reversals: reversals,
+        credits: credits,
+        zeroAmountPurchases: zeroAmountPurchases,
+      };
+
+      return Object.assign({}, report, bundle, {
+        totals: buildTotals(Object.assign({ purchases: dayPurchases, charges: dayCharges }, bundle)),
+      });
+    }
+
+    // =====================================================================
+    // 4. State — kept in this browser only
+    // =====================================================================
+
+    const STORAGE_KEY = 'ticket-reconciler.v1';
+
+    const state = {
+      purchases: {},
+      charges: {},
+      overrides: { links: [], ignoredPurchases: [], ignoredCharges: [] },
+      settings: Object.assign({}, DEFAULT_OPTIONS),
+      tab: 'matched',
+      search: '',
+      day: 'all',
+      sort: {},
+      report: null,
+      storageWorks: true,
+    };
+
+    function load() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        state.purchases = saved.purchases || {};
+        state.charges = saved.charges || {};
+        state.overrides = Object.assign({ links: [], ignoredPurchases: [], ignoredCharges: [] }, saved.overrides || {});
+        state.settings = Object.assign({}, DEFAULT_OPTIONS, saved.settings || {});
+        if (saved.day) state.day = saved.day;
+      } catch (err) {
+        // Private windows and blocked site data both land here; the page still
+        // works, it just forgets between visits.
+        state.storageWorks = false;
+      }
+    }
+
+    function save() {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            purchases: state.purchases,
+            charges: state.charges,
+            overrides: state.overrides,
+            settings: state.settings,
+            day: state.day,
+          }),
+        );
+        state.storageWorks = true;
+      } catch (err) {
+        state.storageWorks = false;
+      }
+    }
+
+    // =====================================================================
+    // 5. Formatting helpers
+    // =====================================================================
+
+    function fmtMoney(n) {
+      return (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    }
+    function fmtSigned(n) {
+      return Number(n) > 0 ? '+' + fmtMoney(n) : fmtMoney(n);
+    }
+    function fmtTime(ms) {
+      if (ms === null || ms === undefined) return '—';
+      return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+    }
+    function fmtDelta(minutes) {
+      if (minutes === null || minutes === undefined) return '—';
+      const abs = Math.abs(minutes);
+      const sign = minutes < 0 ? '−' : '+';
+      if (abs < 1) return sign + Math.round(abs * 60) + 's';
+      if (abs < 60) return sign + abs.toFixed(1) + 'm';
+      return sign + (abs / 60).toFixed(1) + 'h';
+    }
+    function esc(value) {
+      return String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, function (ch) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+      });
+    }
+    const $ = function (sel) {
+      return document.querySelector(sel);
+    };
+
+    // =====================================================================
+    // 6. Ledger sections
+    // =====================================================================
+
+    function stampFor(match) {
+      const flag = match.ambiguous
+        ? ' <span class="stamp ambiguous" title="More than one charge fit equally well">ambiguous</span>'
+        : '';
+      return '<span class="stamp ' + esc(match.confidence) + '">' + esc(match.confidence) + '</span>' + flag;
+    }
+
+    const SECTIONS = [
+      {
+        id: 'matched',
+        label: 'Matched',
+        rows: function (r) {
+          return r.matches;
+        },
+        columns: [
+          { key: 'confidence', label: 'Status', sort: function (m) { return m.confidence; }, render: stampFor },
+          {
+            key: 'purchase',
+            label: 'Purchase',
+            sort: function (m) { return m.purchase.event; },
+            render: function (m) {
+              return (
+                '<div class="lead">' + esc(m.purchase.event || '(no event)') + '</div>' +
+                '<div class="sub">' + esc(m.purchase.venue || '') + (m.purchase.seats ? ' · ' + esc(m.purchase.seats) : '') + '</div>' +
+                '<div class="sub">' + esc(m.purchase.account || '') + '</div>'
+              );
+            },
+          },
+          {
+            key: 'ptime',
+            label: 'Purchased',
+            mono: true,
+            sort: function (m) { return m.purchase.purchasedAt || 0; },
+            render: function (m) { return fmtTime(m.purchase.purchasedAt); },
+          },
+          {
+            key: 'charge',
+            label: 'Card charge',
+            sort: function (m) { return m.charge.description; },
+            render: function (m) {
+              return (
+                '<div class="lead">' + esc(m.charge.description || '(no descriptor)') + '</div>' +
+                '<div class="sub">' + esc(m.charge.cardName || '') + (m.charge.last4 ? ' · ••' + esc(m.charge.last4) : '') + '</div>' +
+                '<div class="sub">' + esc(m.charge.status) + '</div>'
+              );
+            },
+          },
+          {
+            key: 'ctime',
+            label: 'Charged',
+            mono: true,
+            sort: function (m) { return m.charge.occurredAt || 0; },
+            render: function (m) { return fmtTime(m.charge.occurredAt); },
+          },
+          {
+            key: 'delta',
+            label: 'Δ time',
+            num: true,
+            sort: function (m) { return Math.abs(m.deltaMinutes === null ? 1e9 : m.deltaMinutes); },
+            render: function (m) { return fmtDelta(m.deltaMinutes); },
+          },
+          {
+            key: 'amount',
+            label: 'Amount',
+            num: true,
+            sort: function (m) { return m.purchase.amount; },
+            render: function (m) { return fmtMoney(m.purchase.amount); },
+          },
+          {
+            key: 'diff',
+            label: 'Δ amount',
+            num: true,
+            sort: function (m) { return Math.abs(m.amountDiff); },
+            render: function (m) {
+              return m.amountDiff === 0
+                ? '<span class="stamp plain">exact</span>'
+                : '<span class="' + (m.amountDiff > 0 ? 'neg' : 'pos') + '">' + fmtSigned(m.amountDiff) + '</span>';
+            },
+          },
+          {
+            key: 'act',
+            label: '',
+            act: true,
+            render: function (m) {
+              return (
+                '<button class="btn tiny" data-act="detail" data-id="' + esc(m.id) + '">Details</button> ' +
+                '<button class="btn tiny quiet" data-act="unlink" data-purchase="' + esc(m.purchase.id) + '">Unlink</button>'
+              );
+            },
+          },
+        ],
+        search: function (m) {
+          return [m.purchase.event, m.purchase.account, m.purchase.venue, m.purchase.poId, m.purchase.id,
+            m.charge.description, m.charge.cardName, m.charge.last4, m.charge.id, m.purchase.amount];
+        },
+        emptyTitle: 'No matches yet',
+        emptyHint: 'Import a purchase export and a card transaction export to get started.',
+      },
+      {
+        id: 'purchases',
+        label: 'Purchases w/o charge',
+        rows: function (r) { return r.unmatchedPurchases; },
+        columns: [
+          {
+            key: 'event',
+            label: 'Purchase',
+            sort: function (p) { return p.event; },
+            render: function (p) {
+              return (
+                '<div class="lead">' + esc(p.event || '(no event)') + '</div>' +
+                '<div class="sub">' + esc(p.venue || '') + (p.seats ? ' · ' + esc(p.seats) : '') + '</div>' +
+                '<div class="sub">' + esc(p.account || '') + '</div>'
+              );
+            },
+          },
+          { key: 'time', label: 'Purchased', mono: true, sort: function (p) { return p.purchasedAt || 0; }, render: function (p) { return fmtTime(p.purchasedAt); } },
+          {
+            key: 'card',
+            label: 'Card',
+            sort: function (p) { return p.last4; },
+            render: function (p) {
+              return p.last4
+                ? '<span class="stamp plain">••' + esc(p.last4) + '</span>'
+                : '<span class="stamp plain">no card on file</span>';
+            },
+          },
+          { key: 'amount', label: 'Amount', num: true, sort: function (p) { return p.amount; }, render: function (p) { return fmtMoney(p.amount); } },
+          { key: 'why', label: 'Why unmatched', sort: function (p) { return p.reason; }, render: function (p) { return '<div class="why">' + esc(p.reason) + '</div>'; } },
+          {
+            key: 'act',
+            label: '',
+            act: true,
+            render: function (p) {
+              return (
+                '<button class="btn tiny" data-act="find-charge" data-id="' + esc(p.id) + '">Find charge</button> ' +
+                '<button class="btn tiny quiet" data-act="ignore" data-kind="purchase" data-id="' + esc(p.id) + '">Ignore</button>'
+              );
+            },
+          },
+        ],
+        search: function (p) { return [p.event, p.account, p.venue, p.poId, p.id, p.last4, p.amount, p.reason]; },
+        emptyTitle: 'Every purchase has a charge',
+        emptyHint: 'Nothing is out of balance on this side.',
+      },
+      {
+        id: 'charges',
+        label: 'Charges w/o purchase',
+        rows: function (r) { return r.unmatchedCharges; },
+        columns: [
+          {
+            key: 'desc',
+            label: 'Charge',
+            sort: function (c) { return c.description; },
+            render: function (c) {
+              return (
+                '<div class="lead">' + esc(c.description || '(no descriptor)') + '</div>' +
+                '<div class="sub">' + esc(c.cardName || '') + (c.cardGroup ? ' · ' + esc(c.cardGroup) : '') + '</div>'
+              );
+            },
+          },
+          { key: 'time', label: 'Charged', mono: true, sort: function (c) { return c.occurredAt || 0; }, render: function (c) { return fmtTime(c.occurredAt); } },
+          { key: 'card', label: 'Card', mono: true, sort: function (c) { return c.last4; }, render: function (c) { return '••' + esc(c.last4); } },
+          {
+            key: 'status',
+            label: 'Status',
+            sort: function (c) { return c.status; },
+            render: function (c) { return '<span class="stamp ' + (c.status === 'settled' ? 'exact' : 'plain') + '">' + esc(c.status) + '</span>'; },
+          },
+          { key: 'amount', label: 'Amount', num: true, sort: function (c) { return c.amount; }, render: function (c) { return fmtMoney(c.amount); } },
+          { key: 'why', label: 'Why unmatched', sort: function (c) { return c.reason; }, render: function (c) { return '<div class="why">' + esc(c.reason) + '</div>'; } },
+          {
+            key: 'act',
+            label: '',
+            act: true,
+            render: function (c) {
+              return (
+                '<button class="btn tiny" data-act="find-purchase" data-id="' + esc(c.id) + '">Find purchase</button> ' +
+                '<button class="btn tiny quiet" data-act="ignore" data-kind="charge" data-id="' + esc(c.id) + '">Ignore</button>'
+              );
+            },
+          },
+        ],
+        search: function (c) { return [c.description, c.cardName, c.cardGroup, c.last4, c.id, c.amount, c.status, c.reason]; },
+        emptyTitle: 'Every charge has a purchase',
+        emptyHint: 'No money left the cards without an order behind it.',
+      },
+      {
+        id: 'declines',
+        label: 'Declines & reversals',
+        rows: function (r) { return r.declines.concat(r.reversals); },
+        columns: [
+          {
+            key: 'kind',
+            label: 'Type',
+            sort: function (c) { return c.type; },
+            render: function (c) {
+              return c.type === 'card_decline'
+                ? '<span class="stamp bad">declined</span>'
+                : '<span class="stamp review">' + esc(c.status) + '</span>';
+            },
+          },
+          {
+            key: 'desc',
+            label: 'Charge',
+            sort: function (c) { return c.description; },
+            render: function (c) {
+              return '<div class="lead">' + esc(c.description) + '</div><div class="sub">' + esc(c.cardName || '') + '</div>';
+            },
+          },
+          { key: 'time', label: 'When', mono: true, sort: function (c) { return c.occurredAt || 0; }, render: function (c) { return fmtTime(c.occurredAt); } },
+          { key: 'card', label: 'Card', mono: true, sort: function (c) { return c.last4; }, render: function (c) { return '••' + esc(c.last4); } },
+          { key: 'amount', label: 'Amount', num: true, sort: function (c) { return c.amount; }, render: function (c) { return fmtMoney(c.amount); } },
+          { key: 'reason', label: 'Reason', sort: function (c) { return c.declineReason; }, render: function (c) { return '<div class="why">' + esc(c.declineReason || '—') + '</div>'; } },
+        ],
+        search: function (c) { return [c.description, c.cardName, c.last4, c.amount, c.declineReason, c.status]; },
+        emptyTitle: 'No declines or reversals',
+        emptyHint: 'Every attempt on these cards went through.',
+      },
+      {
+        id: 'credits',
+        label: 'Refunds & credits',
+        rows: function (r) { return r.credits; },
+        columns: [
+          {
+            key: 'desc',
+            label: 'Credit',
+            sort: function (c) { return c.description; },
+            render: function (c) {
+              return '<div class="lead">' + esc(c.description) + '</div><div class="sub">' + esc(c.cardName || '') + '</div>';
+            },
+          },
+          { key: 'time', label: 'When', mono: true, sort: function (c) { return c.occurredAt || 0; }, render: function (c) { return fmtTime(c.occurredAt); } },
+          { key: 'card', label: 'Card', mono: true, sort: function (c) { return c.last4; }, render: function (c) { return '••' + esc(c.last4); } },
+          { key: 'amount', label: 'Amount', num: true, sort: function (c) { return c.amount; }, render: function (c) { return '<span class="pos">' + fmtMoney(c.amount) + '</span>'; } },
+        ],
+        search: function (c) { return [c.description, c.cardName, c.last4, c.amount]; },
+        emptyTitle: 'No refunds or credits',
+        emptyHint: 'Nothing came back to the cards on this day.',
+      },
+      {
+        id: 'zero',
+        label: 'No charge expected',
+        rows: function (r) { return r.zeroAmountPurchases; },
+        columns: [
+          {
+            key: 'event',
+            label: 'Purchase',
+            sort: function (p) { return p.event; },
+            render: function (p) {
+              return (
+                '<div class="lead">' + esc(p.event || '(no event)') + '</div>' +
+                '<div class="sub">' + esc(p.account || '') + (p.tags ? ' · ' + esc(p.tags) : '') + '</div>'
+              );
+            },
+          },
+          { key: 'time', label: 'Purchased', mono: true, sort: function (p) { return p.purchasedAt || 0; }, render: function (p) { return fmtTime(p.purchasedAt); } },
+          { key: 'qty', label: 'Qty', num: true, sort: function (p) { return p.qty; }, render: function (p) { return p.qty; } },
+          { key: 'amount', label: 'Amount', num: true, sort: function (p) { return p.amount; }, render: function (p) { return fmtMoney(p.amount); } },
+          {
+            key: 'status',
+            label: 'Fulfilment',
+            sort: function (p) { return p.refundStatus; },
+            render: function (p) { return '<span class="stamp plain">' + esc(p.refundStatus || p.status || '—') + '</span>'; },
+          },
+        ],
+        search: function (p) { return [p.event, p.account, p.tags, p.amount]; },
+        emptyTitle: 'No zero-amount purchases',
+        emptyHint: 'Transfers in and comped inventory would appear here.',
+      },
+    ];
+
+    function sectionById(id) {
+      return (
+        SECTIONS.filter(function (s) {
+          return s.id === id;
+        })[0] || SECTIONS[0]
+      );
+    }
+
+    // =====================================================================
+    // 7. Render
+    // =====================================================================
+
+    function purchaseList() {
+      return Object.keys(state.purchases).map(function (k) {
+        return state.purchases[k];
+      });
+    }
+    function chargeList() {
+      return Object.keys(state.charges).map(function (k) {
+        return state.charges[k];
+      });
+    }
+
+    function collectDays() {
+      const seen = new Map();
+      const bump = function (day, key) {
+        if (!day) return;
+        if (!seen.has(day)) seen.set(day, { day: day, purchases: 0, charges: 0 });
+        seen.get(day)[key] += 1;
+      };
+      purchaseList().forEach(function (p) {
+        bump(p.day || businessDay(p.purchasedAt), 'purchases');
+      });
+      chargeList().forEach(function (c) {
+        bump(c.day || businessDay(c.occurredAt), 'charges');
+      });
+      return Array.from(seen.values()).sort(function (a, b) {
+        return b.day.localeCompare(a.day);
+      });
+    }
+
+    function recompute() {
+      const full = reconcile({
+        purchases: purchaseList(),
+        charges: chargeList(),
+        options: state.settings,
+        overrides: state.overrides,
+      });
+      state.days = collectDays();
+      if (state.day !== 'all' && !state.days.some(function (d) { return d.day === state.day; })) {
+        state.day = 'all';
+      }
+      state.report = state.day === 'all' ? full : scopeToDay(full, state.day);
+    }
+
+    function figure(cap, amount, foot, flag) {
+      return (
+        '<div class="figure' + (flag ? ' flag ' + flag : '') + '">' +
+        '<div class="cap">' + esc(cap) + '</div>' +
+        '<div class="amount">' + amount + '</div>' +
+        '<div class="foot">' + esc(foot) + '</div>' +
+        '</div>'
+      );
+    }
+
+    function renderFigures() {
+      const t = state.report.totals;
+
+      $('#figures-primary').innerHTML =
+        figure('Purchases', fmtMoney(t.purchaseTotal), t.purchaseCount + ' orders') +
+        figure('Card charges', fmtMoney(t.chargeTotal), t.chargeCount + ' captured') +
+        figure(
+          'Matched',
+          String(t.matchedCount),
+          fmtMoney(t.matchedPurchaseTotal) + ' · ' + t.matchRate + '% of rows',
+          'ok',
+        ) +
+        figure(
+          'Variance on matched',
+          fmtSigned(t.matchedVariance),
+          t.matchedVariance === 0 ? 'every pair agrees to the cent' : 'charged minus purchased',
+          t.matchedVariance === 0 ? 'ok' : 'warn',
+        );
+
+      $('#figures-exceptions').innerHTML =
+        figure(
+          'Purchases w/o charge',
+          fmtMoney(t.unmatchedPurchaseTotal),
+          t.unmatchedPurchaseCount + ' orders',
+          t.unmatchedPurchaseCount ? 'warn' : 'ok',
+        ) +
+        figure(
+          'Charges w/o purchase',
+          fmtMoney(t.unmatchedChargeTotal),
+          t.unmatchedChargeCount + ' charges',
+          t.unmatchedChargeCount ? 'bad' : 'ok',
+        ) +
+        figure(
+          'Net exposure',
+          fmtSigned(t.netExposure),
+          'unmatched charges − unmatched purchases',
+          t.netExposure === 0 ? 'ok' : 'bad',
+        ) +
+        figure('Needs review', String(t.needsReviewCount), 'matches with a caveat', t.needsReviewCount ? 'warn' : 'ok') +
+        figure('Declines', String(t.declineCount), fmtMoney(t.declineTotal) + ' attempted', t.declineCount ? 'warn' : 'ok');
+    }
+
+    function renderSections() {
+      $('#sections').innerHTML = SECTIONS.map(function (s) {
+        const n = s.rows(state.report).length;
+        return (
+          '<button class="section-tab" role="tab" aria-selected="' + (s.id === state.tab) + '" data-tab="' + s.id + '">' +
+          esc(s.label) + '<span class="n">' + n + '</span></button>'
+        );
+      }).join('');
+    }
+
+    function visibleRows() {
+      const section = sectionById(state.tab);
+      let rows = section.rows(state.report) || [];
+
+      const q = state.search.trim().toLowerCase();
+      if (q) {
+        rows = rows.filter(function (row) {
+          return section
+            .search(row)
+            .filter(function (v) {
+              return v !== null && v !== undefined && v !== '';
+            })
+            .some(function (v) {
+              return String(v).toLowerCase().indexOf(q) !== -1;
+            });
+        });
+      }
+
+      const sort = state.sort[state.tab];
+      if (sort) {
+        const col = section.columns.filter(function (c) {
+          return c.key === sort.key;
+        })[0];
+        if (col && col.sort) {
+          rows = rows.slice().sort(function (a, b) {
+            const av = col.sort(a);
+            const bv = col.sort(b);
+            const cmp = typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv));
+            return sort.dir === 'asc' ? cmp : -cmp;
+          });
+        }
+      }
+      return rows;
+    }
+
+    function renderLedger() {
+      const section = sectionById(state.tab);
+      const rows = visibleRows();
+      const total = (section.rows(state.report) || []).length;
+
+      $('#tally').textContent = rows.length === total ? total + ' rows' : rows.length + ' of ' + total + ' rows';
+
+      if (!rows.length) {
+        $('#view').innerHTML =
+          '<div class="empty"><h3>' +
+          esc(total === 0 ? section.emptyTitle : 'Nothing matches that filter') +
+          '</h3>' +
+          esc(total === 0 ? section.emptyHint : 'Try a different search term.') +
+          '</div>';
+        return;
+      }
+
+      const sort = state.sort[state.tab];
+      const head = section.columns
+        .map(function (c) {
+          const arrow = sort && sort.key === c.key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+          return '<th class="' + (c.num ? 'num' : '') + '" data-sort="' + c.key + '">' + esc(c.label) + arrow + '</th>';
+        })
+        .join('');
+
+      const body = rows
+        .map(function (row) {
+          return (
+            '<tr>' +
+            section.columns
+              .map(function (c) {
+                const cls = [c.num ? 'num' : '', c.mono ? 'mono' : '', c.act ? 'act' : ''].join(' ').trim();
+                return '<td class="' + cls + '">' + c.render(row) + '</td>';
+              })
+              .join('') +
+            '</tr>'
+          );
+        })
+        .join('');
+
+      $('#view').innerHTML = '<div class="ledger"><table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    }
+
+    function renderChrome() {
+      const days = state.days || [];
+      $('#day-select').innerHTML = ['<option value="all"' + (state.day === 'all' ? ' selected' : '') + '>All days</option>']
+        .concat(
+          days.map(function (d) {
+            return (
+              '<option value="' + d.day + '"' + (state.day === d.day ? ' selected' : '') + '>' +
+              d.day + ' · ' + d.purchases + 'p / ' + d.charges + 'c</option>'
+            );
+          }),
+        )
+        .join('');
+
+      const counts = purchaseList().length + ' purchases · ' + chargeList().length + ' card transactions';
+      const scope = state.day === 'all' ? 'all days' : state.day;
+      $('#standfirst').textContent = counts + ' · showing ' + scope;
+
+      const hasData = purchaseList().length > 0 || chargeList().length > 0;
+      $('#welcome').hidden = hasData;
+      $('#dashboard').hidden = !hasData;
+      $('#export-btn').disabled = !hasData;
+
+      $('#footnote').textContent = state.storageWorks
+        ? 'Everything stays in this browser. Imported rows are kept in this tab’s local storage for this artifact only — clearing your browser’s site data removes them, and re-importing the exports brings them straight back.'
+        : 'This browser is not letting the page save anything (a private window, or site data is blocked). Everything still works, but the page will forget your imports when you close it.';
+    }
+
+    function render() {
+      recompute();
+      renderChrome();
+      if (purchaseList().length || chargeList().length) {
+        renderFigures();
+        renderSections();
+        renderLedger();
+      }
+    }
+
+    // =====================================================================
+    // 8. Import / export
+    // =====================================================================
+
+    function importText(filename, text) {
+      const parsed = parseCsv(text);
+      if (!parsed.headers.length) throw new Error(filename + ' is empty.');
+      const result = normalizeParsed(parsed);
+      const bucket = result.kind === 'purchases' ? state.purchases : state.charges;
+      let added = 0;
+      let updated = 0;
+      result.records.forEach(function (record) {
+        if (bucket[record.id]) updated += 1;
+        else added += 1;
+        bucket[record.id] = record;
+      });
+      return { kind: result.kind, rows: result.records.length, added: added, updated: updated };
+    }
+
+    function importFiles(fileList) {
+      const files = Array.prototype.slice.call(fileList).filter(function (f) {
+        return /\.csv$/i.test(f.name) || f.type === 'text/csv';
+      });
+      if (!files.length) {
+        toast('Only .csv files can be imported.', 'bad');
+        return;
+      }
+      Promise.all(
+        files.map(function (f) {
+          return f.text().then(function (text) {
+            return { name: f.name, text: text };
+          });
+        }),
+      ).then(function (loaded) {
+        loaded.forEach(function (file) {
+          try {
+            const r = importText(file.name, file.text);
+            toast(
+              file.name + ': ' + r.rows + ' ' + (r.kind === 'purchases' ? 'purchases' : 'transactions') +
+                ' (' + r.added + ' new, ' + r.updated + ' updated)',
+              'ok',
+            );
+          } catch (err) {
+            toast(file.name + ': ' + err.message, 'bad');
+          }
+        });
+        save();
+        render();
+      });
+    }
+
+    function reportToCsv(report) {
+      const headers = ['status', 'confidence', 'purchase_id', 'po_id', 'purchased_at', 'account', 'event', 'venue',
+        'seats', 'qty', 'purchase_amount', 'purchase_last4', 'charge_id', 'charge_at', 'charge_description',
+        'charge_card_name', 'charge_last4', 'charge_amount', 'charge_status', 'amount_diff', 'delta_minutes', 'note'];
+      const rows = [];
+
+      report.matches.forEach(function (m) {
+        rows.push(['matched', m.confidence + (m.ambiguous ? ' (ambiguous)' : ''), m.purchase.id, m.purchase.poId,
+          formatTimestamp(m.purchase.purchasedAt), m.purchase.account, m.purchase.event, m.purchase.venue,
+          m.purchase.seats, m.purchase.qty, m.purchase.amount.toFixed(2), m.purchase.last4, m.charge.id,
+          formatTimestamp(m.charge.occurredAt), m.charge.description, m.charge.cardName, m.charge.last4,
+          m.charge.amount.toFixed(2), m.charge.status, m.amountDiff.toFixed(2),
+          m.deltaMinutes === null ? '' : m.deltaMinutes.toFixed(1), m.note]);
+      });
+      report.unmatchedPurchases.forEach(function (p) {
+        rows.push(['purchase_without_charge', '', p.id, p.poId, formatTimestamp(p.purchasedAt), p.account, p.event,
+          p.venue, p.seats, p.qty, p.amount.toFixed(2), p.last4, '', '', '', '', '', '', '', '', '', p.reason]);
+      });
+      report.unmatchedCharges.forEach(function (c) {
+        rows.push(['charge_without_purchase', '', '', '', '', '', '', '', '', '', '', '', c.id,
+          formatTimestamp(c.occurredAt), c.description, c.cardName, c.last4, c.amount.toFixed(2), c.status, '', '', c.reason]);
+      });
+      report.declines.concat(report.reversals).forEach(function (c) {
+        rows.push([c.type === 'card_decline' ? 'declined' : 'reversed', '', '', '', '', '', '', '', '', '', '', '',
+          c.id, formatTimestamp(c.occurredAt), c.description, c.cardName, c.last4, c.amount.toFixed(2), c.status,
+          '', '', c.declineReason]);
+      });
+
+      return toCsv(headers, rows);
+    }
+
+    function exportCsv() {
+      const csv = reportToCsv(state.report);
+      const filename = 'reconciliation-' + (state.day === 'all' ? 'all-days' : state.day) + '.csv';
+
+      const offerFallback = function () {
+        openModal(
+          'Copy the export',
+          '<p class="why">This browser would not save the file directly. Select everything below and copy it into a new ' +
+            'spreadsheet or text file.</p><textarea class="csv" readonly>' + esc(csv) + '</textarea>',
+        );
+        const box = $('#modal-body').querySelector('textarea');
+        if (box) {
+          box.focus();
+          box.select();
+        }
+      };
+
+      // Outside the artifact viewer (this file opened straight from disk) an
+      // ordinary blob download works and is the least surprising thing.
+      if (!window.claude || typeof window.claude.use !== 'function') {
+        try {
+          const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () {
+            URL.revokeObjectURL(url);
+          }, 2000);
+          toast('Saved ' + filename, 'ok');
+        } catch (err) {
+          offerFallback();
+        }
+        return;
+      }
+
+      window.claude
+        .use('downloads')
+        .then(function (downloads) {
+          if (!downloads) {
+            offerFallback();
+            return null;
+          }
+          return downloads.save({ filename: filename, data: csv }).then(function () {
+            toast('Saved ' + filename, 'ok');
+          });
+        })
+        .catch(function () {
+          offerFallback();
+        });
+    }
+
+    // =====================================================================
+    // 9. Modals and actions
+    // =====================================================================
+
+    function openModal(title, html) {
+      $('#modal-title').textContent = title;
+      $('#modal-body').innerHTML = html;
+      $('#modal').hidden = false;
+    }
+
+    function closeModal() {
+      $('#modal').hidden = true;
+    }
+
+    function fact(label, value) {
+      return '<div><span>' + esc(label) + '</span><b>' + esc(value === '' || value === null || value === undefined ? '—' : value) + '</b></div>';
+    }
+
+    function openDetail(matchId) {
+      const m = state.report.matches.filter(function (x) {
+        return x.id === matchId;
+      })[0];
+      if (!m) return;
+      openModal(
+        'Matched transaction',
+        '<div class="facts">' +
+          fact('Event', m.purchase.event) + fact('Venue', m.purchase.venue) + fact('Seats', m.purchase.seats) +
+          fact('Qty', m.purchase.qty) + fact('Account', m.purchase.account) + fact('PO id', m.purchase.poId) +
+          fact('Purchase id', m.purchase.id) + fact('Purchased', fmtTime(m.purchase.purchasedAt)) +
+          fact('Purchase amount', fmtMoney(m.purchase.amount)) +
+          fact('Purchase card', m.purchase.last4 ? '••' + m.purchase.last4 : 'not recorded') +
+          fact('Tags', m.purchase.tags) +
+        '</div>' +
+        '<div class="facts">' +
+          fact('Descriptor', m.charge.description) + fact('Card name', m.charge.cardName) +
+          fact('Card group', m.charge.cardGroup) + fact('Card', '••' + m.charge.last4) +
+          fact('Charge id', m.charge.id) + fact('Type', m.charge.type) + fact('Status', m.charge.status) +
+          fact('Authorized', fmtTime(m.charge.authorizedAt)) + fact('Posted', fmtTime(m.charge.postedAt)) +
+          fact('Charge amount', fmtMoney(m.charge.amount)) + fact('Order id', m.charge.orderId) +
+          fact('Reference', m.charge.referenceNumber) +
+        '</div>' +
+        '<div class="facts">' +
+          fact('Match type', m.method) + fact('Confidence', m.confidence) +
+          fact('Time apart', fmtDelta(m.deltaMinutes)) + fact('Amount difference', fmtMoney(m.amountDiff)) +
+        '</div>',
+      );
+    }
+
+    function candidateTable(headerCells, bodyRows, emptyMessage) {
+      if (!bodyRows) return '<p class="why">' + esc(emptyMessage) + '</p>';
+      return (
+        '<div class="ledger"><table><thead><tr>' + headerCells + '</tr></thead><tbody>' + bodyRows + '</tbody></table></div>'
+      );
+    }
+
+    function openFindCharge(purchaseId) {
+      const p = state.report.unmatchedPurchases.filter(function (x) {
+        return x.id === purchaseId;
+      })[0];
+      if (!p) return;
+
+      const body = p.candidates
+        .map(function (c) {
+          return (
+            '<tr><td><div class="lead">' + esc(c.description) + '</div><div class="sub">' + esc(c.cardName || '') + ' · ' + esc(c.status) + '</div></td>' +
+            '<td class="mono">' + fmtTime(c.occurredAt) + '</td>' +
+            '<td class="mono">••' + esc(c.last4) + (c.last4Agree ? ' <span class="stamp exact">same card</span>' : '') + '</td>' +
+            '<td class="num">' + fmtMoney(c.amount) + '</td>' +
+            '<td class="num">' + (c.amountDiff === 0 ? '<span class="stamp plain">exact</span>' : fmtSigned(c.amountDiff)) + '</td>' +
+            '<td class="num">' + fmtDelta(c.deltaMinutes) + '</td>' +
+            '<td class="act"><button class="btn tiny primary" data-act="link" data-purchase="' + esc(p.id) + '" data-charge="' + esc(c.id) + '">Link</button></td></tr>'
+          );
+        })
+        .join('');
+
+      openModal(
+        'Link this purchase to a charge',
+        '<div class="facts">' +
+          fact('Event', p.event) + fact('Account', p.account) + fact('Purchased', fmtTime(p.purchasedAt)) +
+          fact('Amount', fmtMoney(p.amount)) + fact('Card', p.last4 ? '••' + p.last4 : 'not recorded') + fact('PO id', p.poId) +
+        '</div>' +
+          candidateTable(
+            '<th>Charge</th><th>When</th><th>Card</th><th class="num">Amount</th><th class="num">Δ amount</th><th class="num">Δ time</th><th></th>',
+            body,
+            'No unmatched charge is close enough to suggest. Import more card transactions, or widen the matching rules.',
+          ),
+      );
+    }
+
+    function openFindPurchase(chargeId) {
+      const c = state.report.unmatchedCharges.filter(function (x) {
+        return x.id === chargeId;
+      })[0];
+      if (!c) return;
+
+      const body = c.candidates
+        .map(function (p) {
+          return (
+            '<tr><td><div class="lead">' + esc(p.event) + '</div><div class="sub">' + esc(p.account || '') + '</div></td>' +
+            '<td class="mono">' + fmtTime(p.purchasedAt) + '</td>' +
+            '<td class="mono">' + (p.last4 ? '••' + esc(p.last4) : '—') + (p.last4Agree ? ' <span class="stamp exact">same card</span>' : '') + '</td>' +
+            '<td class="num">' + fmtMoney(p.amount) + '</td>' +
+            '<td class="num">' + (p.amountDiff === 0 ? '<span class="stamp plain">exact</span>' : fmtSigned(p.amountDiff)) + '</td>' +
+            '<td class="num">' + fmtDelta(p.deltaMinutes) + '</td>' +
+            '<td class="act"><button class="btn tiny primary" data-act="link" data-purchase="' + esc(p.id) + '" data-charge="' + esc(c.id) + '">Link</button></td></tr>'
+          );
+        })
+        .join('');
+
+      openModal(
+        'Link this charge to a purchase',
+        '<div class="facts">' +
+          fact('Descriptor', c.description) + fact('Card name', c.cardName) + fact('Card', '••' + c.last4) +
+          fact('When', fmtTime(c.occurredAt)) + fact('Amount', fmtMoney(c.amount)) + fact('Status', c.status) +
+        '</div>' +
+          candidateTable(
+            '<th>Purchase</th><th>When</th><th>Card</th><th class="num">Amount</th><th class="num">Δ amount</th><th class="num">Δ time</th><th></th>',
+            body,
+            'No unmatched purchase is close enough to suggest — this may be a charge from a source you do not import.',
+          ),
+      );
+    }
+
+    function linkPair(purchaseId, chargeId) {
+      state.overrides.links = state.overrides.links.filter(function (l) {
+        return l.purchaseId !== purchaseId && l.chargeId !== chargeId;
+      });
+      state.overrides.links.push({ purchaseId: purchaseId, chargeId: chargeId, note: '' });
+      save();
+      closeModal();
+      toast('Linked.', 'ok');
+      render();
+    }
+
+    function handleAction(event) {
+      const btn = event.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.getAttribute('data-act');
+
+      if (act === 'detail') openDetail(btn.getAttribute('data-id'));
+      else if (act === 'find-charge') openFindCharge(btn.getAttribute('data-id'));
+      else if (act === 'find-purchase') openFindPurchase(btn.getAttribute('data-id'));
+      else if (act === 'link') linkPair(btn.getAttribute('data-purchase'), btn.getAttribute('data-charge'));
+      else if (act === 'unlink') {
+        const purchaseId = btn.getAttribute('data-purchase');
+        state.overrides.links = state.overrides.links.filter(function (l) {
+          return l.purchaseId !== purchaseId;
+        });
+        save();
+        toast('Unlinked — it will be matched again automatically if it still fits.', 'ok');
+        render();
+      } else if (act === 'ignore') {
+        const key = btn.getAttribute('data-kind') === 'purchase' ? 'ignoredPurchases' : 'ignoredCharges';
+        const id = btn.getAttribute('data-id');
+        if (state.overrides[key].indexOf(id) === -1) state.overrides[key].push(id);
+        save();
+        toast('Ignored. Clear all data to bring it back.', 'ok');
+        render();
+      }
+    }
+
+    function toast(message, kind) {
+      const el = document.createElement('div');
+      el.className = 'toast' + (kind ? ' ' + kind : '');
+      el.textContent = message;
+      $('#toasts').appendChild(el);
+      setTimeout(function () {
+        el.remove();
+      }, 6500);
+    }
+
+    // =====================================================================
+    // 10. Wiring
+    // =====================================================================
+
+    $('#import-btn').addEventListener('click', function () {
+      $('#file-input').click();
+    });
+    $('#welcome-import').addEventListener('click', function () {
+      $('#file-input').click();
+    });
+    $('#file-input').addEventListener('change', function (e) {
+      importFiles(e.target.files);
+      e.target.value = '';
+    });
+    $('#export-btn').addEventListener('click', exportCsv);
+
+    $('#day-select').addEventListener('change', function (e) {
+      state.day = e.target.value;
+      save();
+      render();
+    });
+
+    $('#search').addEventListener('input', function (e) {
+      state.search = e.target.value;
+      renderLedger();
+    });
+
+    $('#sections').addEventListener('click', function (e) {
+      const tab = e.target.closest('[data-tab]');
+      if (!tab) return;
+      state.tab = tab.getAttribute('data-tab');
+      renderSections();
+      renderLedger();
+    });
+
+    $('#view').addEventListener('click', function (e) {
+      const th = e.target.closest('th[data-sort]');
+      if (th) {
+        const key = th.getAttribute('data-sort');
+        const current = state.sort[state.tab];
+        state.sort[state.tab] =
+          current && current.key === key ? { key: key, dir: current.dir === 'asc' ? 'desc' : 'asc' } : { key: key, dir: 'asc' };
+        renderLedger();
+        return;
+      }
+      handleAction(e);
+    });
+
+    $('#modal').addEventListener('click', function (e) {
+      if (e.target === $('#modal')) {
+        closeModal();
+        return;
+      }
+      handleAction(e);
+    });
+    $('#modal-close').addEventListener('click', closeModal);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeModal();
+    });
+
+    $('#settings-btn').addEventListener('click', function () {
+      const panel = $('#settings');
+      panel.hidden = !panel.hidden;
+      $('#settings-btn').setAttribute('aria-expanded', String(!panel.hidden));
+      if (!panel.hidden) fillSettings();
+    });
+    $('#settings-close').addEventListener('click', function () {
+      $('#settings').hidden = true;
+      $('#settings-btn').setAttribute('aria-expanded', 'false');
+    });
+
+    function fillSettings() {
+      $('#opt-amountTolerance').value = state.settings.amountTolerance;
+      $('#opt-timeWindowMinutes').value = state.settings.timeWindowMinutes;
+      $('#opt-chargeTimeOffsetMinutes').value = state.settings.chargeTimeOffsetMinutes;
+      $('#opt-requireLast4').checked = Boolean(state.settings.requireLast4);
+    }
+
+    $('#settings-apply').addEventListener('click', function () {
+      const num = function (sel, fallback) {
+        const v = Number($(sel).value);
+        return isFinite(v) ? v : fallback;
+      };
+      state.settings = {
+        amountTolerance: Math.max(0, num('#opt-amountTolerance', 0)),
+        timeWindowMinutes: Math.max(1, num('#opt-timeWindowMinutes', 240)),
+        chargeTimeOffsetMinutes: num('#opt-chargeTimeOffsetMinutes', 0),
+        requireLast4: $('#opt-requireLast4').checked,
+        zeroAmountThreshold: 0,
+      };
+      save();
+      toast('Matching rules updated.', 'ok');
+      render();
+    });
+
+    // Two-step confirm: modal dialogs can be blocked in an embedded frame,
+    // so destructive actions confirm themselves in place.
+    let clearArmed = false;
+    let clearTimer = null;
+    $('#clear-btn').addEventListener('click', function () {
+      const btn = $('#clear-btn');
+      if (!clearArmed) {
+        clearArmed = true;
+        btn.textContent = 'Tap again to delete everything';
+        clearTimer = setTimeout(function () {
+          clearArmed = false;
+          btn.textContent = 'Clear all data';
+        }, 4000);
+        return;
+      }
+      clearTimeout(clearTimer);
+      clearArmed = false;
+      btn.textContent = 'Clear all data';
+      state.purchases = {};
+      state.charges = {};
+      state.overrides = { links: [], ignoredPurchases: [], ignoredCharges: [] };
+      state.day = 'all';
+      save();
+      toast('All imported data deleted.', 'ok');
+      render();
+    });
+
+    // Drag and drop anywhere on the page.
+    let dragDepth = 0;
+    window.addEventListener('dragenter', function (e) {
+      e.preventDefault();
+      dragDepth += 1;
+      $('#dropzone').hidden = false;
+    });
+    window.addEventListener('dragover', function (e) {
+      e.preventDefault();
+    });
+    window.addEventListener('dragleave', function () {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) $('#dropzone').hidden = true;
+    });
+    window.addEventListener('drop', function (e) {
+      e.preventDefault();
+      dragDepth = 0;
+      $('#dropzone').hidden = true;
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) importFiles(e.dataTransfer.files);
+    });
+
+    // ---- sample data (synthetic, safe to share) -------------------------
+    const SAMPLE_PURCHASES =
+      'id,account_id,account_company_id,username,event_name,event_date,venue_name,city,state,remote_id,legacy_remote_id,pos_po_id,payment_instrument_brand,payment_instrument_last_four,payment_type,payment_currency,billing_full_name,billing_postal_code,web_id,purchase_date,status,event_status,ticket_details,original_amount,original_amount_override,payment_amount,refunded_amount,refunded_at,refund_status,refund_expiration_date,qty,stock_type,internal_tags\n' +
+      '1001,900001,702,buyer01@example.com,Preseason - Green Bay Packers v Arizona Cardinals,2026-08-28 19:00:00,Lambeau Field,,,cop-sample-1001,sample-1001,500001,Visa,1891,Visa,USD,,,,2026-08-26 16:50:13,,OFFSALE,131 : 4 : 1 - 4,205.89,,205.89,0,,UNKNOWN,,4,MOBILE TRANSFER,Sample\n' +
+      '1002,900001,702,buyer01@example.com,Preseason Game: Philadelphia Eagles v Cincinnati Bengals,2026-08-28 20:00:00,Lincoln Financial Field,,,cop-sample-1002,sample-1002,500002,Visa,1891,Visa,USD,,,,2026-08-26 14:11:06,,ONSALE,104 : 23 : 19 - 20,117.0,,117.0,0,,UNKNOWN,,2,MOBILE TRANSFER,Sample\n' +
+      '1003,900002,702,buyer02@example.com,Preseason Game 2: Los Angeles Chargers v Los Angeles Rams,2026-08-27 19:00:00,SoFi Stadium,,,cop-sample-1003,sample-1003,500003,Visa,4818,Visa,USD,,,,2026-08-26 03:03:10,,ONSALE,C135 : 4 : 11 - 13,329.4,,329.4,0,,UNKNOWN,,3,MOBILE TRANSFER,Sample\n' +
+      '1004,900003,702,house@example.com,Carolina Panthers,2026-10-04 20:20:00,Bank of America Stadium,,,sample-1004,,500004,,,,USD,,,,2026-08-26 14:50:02,,,502 : 1D : 11 - 12,349.87,,,0,,UNKNOWN,,2,HARD,\n' +
+      '1005,900004,702,buyer03@example.com,Preseason Game 2: Tennessee Titans v Chicago Bears,2026-08-29 17:00:00,Nissan Stadium,,,cop-sample-1005,sample-1005,500005,Visa,3477,Visa,USD,,,,2026-08-26 02:03:00,COMPLETE,ONSALE,106 : CC : 11 - 12,80.08,,80.08,0,,UNKNOWN,,2,MOBILE TRANSFER,Sample\n' +
+      '1006,900005,702,buyer04@example.com,Ye Live in New Orleans,2026-08-28 20:00:00,Caesars Superdome,,,cop-sample-1006,sample-1006,500006,Visa,4123,Visa,USD,,,,2026-08-26 02:20:55,COMPLETE,ONSALE,116 : 17 : 19 - 21,609.9,,609.9,0,,UNKNOWN,,3,MOBILE TRANSFER,Sample\n' +
+      '1007,900006,702,fulfilment@example.com,Carolina Panthers v Detroit Lions,2026-10-04 20:20:00,Bank of America Stadium,,,cop-sample-1007,sample-1007,,,,,,,,,2026-08-26 14:53:22,,ONSALE,502 : 1D : 11 - 12,0.0,,0.0,0,,SENT,,2,MOBILE TRANSFER,Transfer In\n' +
+      '1008,900007,702,buyer05@example.com,Ishay Ribo with the Israeli Philharmonic Orchestra,2026-08-30 19:30:00,Hard Rock Live,,,cop-sample-1008,sample-1008,500008,Visa,8411,Visa,USD,,,,2026-08-26 17:19:53,,ONSALE,115 : L : 25 - 26,404.50,,404.50,0,,UNKNOWN,,2,MOBILE TRANSFER,Sample\n' +
+      '1009,900008,702,buyer06@example.com,PRESEASON: Washington Commanders at Baltimore Ravens,2026-08-28 18:00:00,"M&T Bank Stadium, Baltimore, MD",,,sample-1009,,500009,,,,USD,,,,2026-08-26 14:31:35,,,552 : 6 : 4 - 7,265.28,,,0,,UNKNOWN,,4,MOBILE TRANSFER,\n' +
+      '1010,900009,702,buyer07@example.com,Preseason Game 2 Las Vegas Raiders v San Francisco 49ers,2026-08-27 17:00:00,Allegiant Stadium,,,cop-sample-1010,sample-1010,500010,Visa,8917,Visa,USD,,,,2026-08-26 17:27:59,,ONSALE,313 : 7 : 5 - 6,142.8,,142.8,0,,UNKNOWN,,2,MOBILE TRANSFER,Sample\n';
+
+    const SAMPLE_CHARGES =
+      'Id,Date (UTC),Description,Amount,Foreign Amount,Foreign Currency,Foreign Exchange Rate,Type,Card ID,Last 4,Card Expiry Month,Card Expiry Year,Authorization Date (UTC),Card Name,Card Group Name,Virtual Account ID,Virtual Account Name,Account Type,Order Id,Reference Number,Decline Reason,Status,Memo,External Description,Receiver ID,Note\n' +
+      '"tx_sample_01",2026-08-26 04:50:16PM,"TM *TICKETMASTER",-205.89,205.89,"USD",1,"card_authorization","c_sample01","1891","06","2031",,"Mirror 163","Mirror August 2026","subaccount_sample","Primary account","Credit",,,,"pending",,,,\n' +
+      '"tx_sample_02",2026-08-26 02:11:10PM,"TM *TICKETMASTER",-117,117,"USD",1,"card_authorization","c_sample01","1891","06","2031",,"Mirror 163","Mirror August 2026","subaccount_sample","Primary account","Credit",,,,"pending",,,,\n' +
+      '"tx_sample_03",2026-08-26 04:45:52PM,"TM *TICKETMASTER",-205.89,205.89,"USD",1,"card_authorization","c_sample02","8679","01","2031",,"Mirror 122","Mirror August 2026","subaccount_sample","Primary account","Credit",,,,"pending",,,,\n' +
+      '"tx_sample_04",2026-08-26 02:47:39PM,"TM RESALE 800-842-7112",-349.87,349.87,"USD",1,"card_authorization","c_sample03","9175","05","2029",,"TradeDesk",,"subaccount_sample","Primary account","Credit",,,,"pending",,,,\n' +
+      '"tx_sample_05",2026-08-26 02:02:40AM,"TM *TICKETMASTER",-80.08,80.08,"USD",1,"card_decline","c_sample04","3477","11","2029",,"Mirror 118","Mirror August 2026","subaccount_sample","Primary account","Credit",,,"an incorrect CVV was entered","declined",,,,\n' +
+      '"tx_sample_06",2026-08-26 09:57:01AM,"TM *TICKETMASTER",-609.9,609.9,"USD",1,"card_settlement","c_sample05","4123","02","2029",2026-08-26 02:20:43AM,"Ye",,"subaccount_sample","Primary account","Credit","483098368559346627","070599",,"settled",,,,\n' +
+      '"tx_sample_07",2026-08-26 05:19:30PM,"TM *TICKETMASTER",-404.5,404.5,"USD",1,"card_authorization","c_sample06","8411","10","2031",,"Robo",,"subaccount_sample","Primary account","Credit",,,,"reversed",,,,\n' +
+      '"tx_sample_08",2026-08-26 03:36:14PM,"SEATGEEK TICKETS",-265.28,265.28,"USD",1,"card_settlement","c_sample07","2961","01","2028",2026-08-26 02:30:56PM,"SG house",,"subaccount_sample","Primary account","Credit","8a019e0fdee84769b87e9","755535",,"settled",,,,\n' +
+      '"tx_sample_09",2026-08-26 05:28:02PM,"TM *TICKETMASTER",-142.8,142.8,"USD",1,"card_authorization","c_sample08","8917","04","2031",,"Mirror 128","Mirror August 2026","subaccount_sample","Primary account","Credit",,,,"pending",,,,\n' +
+      '"tx_sample_10",2026-08-26 05:29:58PM,"TM *TICKETMASTER",-121.3,121.3,"USD",1,"card_authorization","c_sample09","7848","12","2030",,"New Cards 80","New Ticketmaster","subaccount_sample","Primary account","Credit",,,,"pending",,,,\n' +
+      '"tx_sample_11",2026-08-26 05:27:13PM,"TM *TICKETMASTER",-647.6,647.6,"USD",1,"card_authorization","c_sample10","4474","05","2030",,"New Cards 64","New Ticketmaster","subaccount_sample","Primary account","Credit",,,,"pending",,,,\n' +
+      '"tx_sample_12",2026-08-26 11:04:22AM,"TM *TICKETMASTER",85,85,"USD",1,"card_settlement","c_sample01","1891","06","2031",2026-08-25 08:11:02PM,"Mirror 163","Mirror August 2026","subaccount_sample","Primary account","Credit","483054405924207460","784754",,"settled","refund for cancelled event",,,\n';
+
+    $('#load-sample').addEventListener('click', function () {
+      importText('sample-purchases.csv', SAMPLE_PURCHASES);
+      importText('sample-transactions.csv', SAMPLE_CHARGES);
+      save();
+      toast('Sample day loaded — 10 purchases, 12 card transactions.', 'ok');
+      render();
+    });
+
+    load();
+    render();
+  })();
+</script>
+</body>
+</html>
