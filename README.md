@@ -3,16 +3,20 @@
 A live daily dashboard that matches ticket purchases against the credit card
 charges that paid for them, and shows you what does not line up.
 
-Drop in today's two exports — your purchase-order export and your card
-transaction export — and the dashboard tells you, in one screen:
+Drop in today's two exports — your purchases and your card transactions — and
+the dashboard tells you, in one screen:
 
 - which purchases are paid for, and how confident that pairing is
 - which purchases have **no charge** behind them
 - which charges have **no purchase** behind them (money out the door with nothing to show)
 - which attempts were **declined** or **reversed**
+- where your POS's payment state **disagrees with what the cards actually did**
 - your net exposure for the day, in dollars
 
 No build step, no database, no dependencies. Node 20+ and a browser.
+
+There is also a single-file browser build — `ticket-reconciler-standalone.html`
+— that needs nothing installed at all: open it and drop the files on the page.
 
 ```bash
 node server.js          # → http://localhost:4173
@@ -21,6 +25,36 @@ node server.js          # → http://localhost:4173
 Then drag both CSVs onto the page.
 
 ---
+
+## What you can import
+
+Three exports are recognised, in `.csv` or `.xlsx`, and the file type is worked
+out from its column headers — you never say which is which.
+
+| Export | Key columns | What it gives you |
+| --- | --- | --- |
+| **Purchase orders** (per ticket group) | `pos_po_id`, `payment_instrument_last_four`, `purchase_date` | Event names, seats, and the **card last-four** — the strongest matching signal |
+| **Purchased Inventory** (per PO) | `PO Id`, `PO Date`, `Total Cost`, `PO Payment State` | Every PO with its **vendor** and the **payment state your POS believes** |
+| **Card transactions** | `Last 4`, `Date (UTC)`, `Authorization Date (UTC)` | What actually happened on the cards |
+
+The two purchase exports describe the same orders — `PO Id` is `pos_po_id`. Import
+both and the newer one **replaces** those POs rather than counting them twice.
+
+### If your purchase export has no card numbers
+
+The Purchased Inventory export carries no card digits, so the matcher loses its
+strongest signal. Two things take over:
+
+- **Vendor.** A SeatGeek order can never be the TicketMaster charge sitting next
+  to it, even at the same amount and the same minute. `Unknown Vendor` constrains
+  nothing, so those still match on amount and time alone.
+- **PO Payment State.** Your POS's claim, checked against reality. A PO marked
+  **Paid** with no charge behind it says so in plain words; a PO marked
+  **NotPaid** that *was* charged gets flagged on the matched row.
+
+Matches made without a card top out at **likely** — see the confidence levels
+below. Turning on **Require last-4 match** in the rules will refuse them
+entirely, which with this export means refusing everything.
 
 ## How matching works
 
@@ -31,6 +65,7 @@ A purchase and a charge are paired when **all three** hold:
 | Amount | Equal to the cent (a tolerance is configurable) |
 | Time | Within the window, default 240 minutes |
 | Card | The last four digits must not *contradict* — equal, or missing on one side |
+| Vendor | The merchant must not *contradict* — a SeatGeek order is never a TM charge |
 
 Two cards that differ are never paired, no matter how well the amount and time
 agree. That single rule does most of the work: on a normal day dozens of
@@ -44,8 +79,9 @@ same two files always reconcile the same way, regardless of row order.
 Each match carries a confidence you can act on:
 
 - **exact** — same card, same cent amount, minutes apart. Nothing to check.
-- **likely** — one signal missing, almost always a purchase with no card
-  recorded (hard stock, TradeDesk, SeatGeek).
+- **likely** — one signal missing, usually a purchase with no card recorded
+  (hard stock, TradeDesk, or the whole Purchased Inventory export). Something
+  else still corroborates: a very close time, or an agreeing vendor.
 - **review** — the amounts differ, or the only evidence is a coincidental
   amount and time.
 - **manual** — you linked it by hand.
@@ -77,6 +113,15 @@ Every unmatched row comes with a plain-English reason, not just a red mark:
   over the whole dataset; the day filter is applied to the *results*. A purchase
   at 23:58 whose authorization lands at 00:02 stays one transaction.
 - **Leading zeros in card digits are preserved** — `0680` is not `680`.
+- **Three timestamp formats, one clock.** `2026-08-26 16:50:13`,
+  `2026-08-26 04:50:16PM` and `8/26/2026 4:50:13 PM +00:00` all mean the same
+  moment. A real UTC offset is applied when one is present.
+- **A totals row is not a purchase.** The Purchased Inventory export ends with a
+  blank-PO summary line; it is skipped rather than imported as a $13,613.26 order.
+- **Mismatched export windows are called out, not counted as loss.** Pull
+  purchases up to 03:24 against card activity running to 17:49 and the afternoon's
+  orders would look unpaid. The dashboard names both windows and how many rows
+  fall outside the other file.
 
 ---
 
@@ -129,13 +174,14 @@ Changing a setting re-runs the reconciliation immediately across all data.
 ```
 server.js              HTTP server, imports, inbox watcher, SSE
 src/csv.js             RFC 4180 parser and writer
+src/xlsx.js            Minimal .xlsx reader (no dependencies)
 src/normalize.js       Both exports → one canonical shape
 src/match.js           The reconciliation engine (pure, no I/O)
 src/report.js          Day scoping and totals
 src/store.js           Atomic JSON persistence
 public/                The dashboard (vanilla JS, no build)
 samples/               Synthetic exports covering every case
-test/                  59 tests: unit, engine, and full HTTP
+test/                  84 tests: unit, engine, and full HTTP
 ```
 
 `src/match.js` is pure and has no I/O, so it can be lifted into a script or a
@@ -163,8 +209,8 @@ if you intend to expose it, and put it behind auth if you do.
 npm test
 ```
 
-59 tests: the CSV parser against quoting and BOM edge cases, both timestamp
-formats, and the matching rules — card conflicts, declines, reversals, manual
+84 tests: the CSV and XLSX parsers, all three timestamp formats, and the
+matching rules — card conflicts, declines, reversals, manual
 links, ambiguity, ordering stability — plus an end-to-end pass that boots the
 server and drives the real HTTP API.
 

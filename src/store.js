@@ -82,12 +82,33 @@ export class Store {
     const bucket = this.data[kind];
     let added = 0;
     let updated = 0;
+    let replaced = 0;
+
+    // The same purchase order appears in both purchase exports under different
+    // row ids (`id` in the per-ticket export, `PO Id` in Purchased Inventory).
+    // Importing both would otherwise count that money twice, so an incoming
+    // record evicts the same PO from the *other* export. Rows from the same
+    // export are left alone — one PO can legitimately span several of them.
+    const incomingPoIds = new Map();
+    for (const record of records) {
+      if (record.poId) incomingPoIds.set(record.poId, record.source);
+    }
+    if (incomingPoIds.size) {
+      for (const [key, existing] of Object.entries(bucket)) {
+        const incomingSource = incomingPoIds.get(existing.poId);
+        if (incomingSource && existing.source && existing.source !== incomingSource) {
+          delete bucket[key];
+          replaced += 1;
+        }
+      }
+    }
+
     for (const record of records) {
       if (bucket[record.id]) updated += 1;
       else added += 1;
       bucket[record.id] = record;
     }
-    return { added, updated, total: Object.keys(bucket).length };
+    return { added, updated, replaced, total: Object.keys(bucket).length };
   }
 
   recordImport(entry) {

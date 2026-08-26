@@ -38,10 +38,24 @@ const MINUTE = 60 * 1000;
 const SCORE = {
   last4Match: 10_000,
   exactAmount: 1_000,
+  /** Weaker than the card — a merchant only has a handful of values — but real. */
+  merchantMatch: 500,
   settled: 50,
   /** Each minute of separation costs a point; 240-minute window < any bonus. */
   minutePenalty: 1,
 };
+
+/**
+ * Do a purchase and a charge come from merchants that cannot both be true?
+ * Only fires when both sides are identifiable — "Unknown Vendor" vetoes nothing.
+ */
+function merchantConflict(purchase, charge) {
+  return Boolean(purchase.merchant && charge.merchant && purchase.merchant !== charge.merchant);
+}
+
+function merchantAgrees(purchase, charge) {
+  return Boolean(purchase.merchant && charge.merchant && purchase.merchant === charge.merchant);
+}
 
 /**
  * @param {object} args
@@ -151,12 +165,14 @@ export function reconcile({ purchases = [], charges = [], options = {}, override
       const last4Agree = p.last4 && c.last4 && p.last4 === c.last4;
       const last4Conflict = p.last4 && c.last4 && p.last4 !== c.last4;
       if (last4Conflict) continue; // different card: never the same transaction
+      if (merchantConflict(p, c)) continue; // a SeatGeek order is not a TM charge
       if (opts.requireLast4 && !last4Agree) continue;
 
       const amountCents = Math.abs(toCents(c.amount) - pCents);
       let score = -Math.abs(delta / MINUTE) * SCORE.minutePenalty;
       if (last4Agree) score += SCORE.last4Match;
       if (amountCents === 0) score += SCORE.exactAmount;
+      if (merchantAgrees(p, c)) score += SCORE.merchantMatch;
       if (c.status === 'settled') score += SCORE.settled;
 
       candidates.push({ purchase: p, charge: c, score, delta, last4Agree, amountCents });
@@ -264,6 +280,14 @@ function buildMatch(purchase, charge, opts, extra = {}) {
   const deltaMinutes = delta === null ? null : delta / MINUTE;
   const amountDiff = Number((charge.amount - purchase.amount).toFixed(2));
   const last4Agree = Boolean(purchase.last4 && charge.last4 && purchase.last4 === charge.last4);
+  const merchantAgree = merchantAgrees(purchase, charge);
+
+  // Your POS's opinion of whether the PO was paid, against what the card did.
+  // A charge exists here by definition, so "NotPaid" is the discrepancy.
+  const flags = [];
+  const state = (purchase.paymentState || '').toLowerCase();
+  if (state === 'notpaid' || state === 'not paid') flags.push('pos-says-unpaid');
+  if (state === 'refund needed') flags.push('pos-says-refund-needed');
 
   return {
     id: `${purchase.id}::${charge.id}`,
@@ -273,7 +297,12 @@ function buildMatch(purchase, charge, opts, extra = {}) {
     deltaMinutes,
     amountDiff,
     last4Agree,
-    confidence: extra.method === 'manual' ? 'manual' : gradeConfidence({ last4Agree, amountDiff, deltaMinutes }),
+    merchantAgree,
+    flags,
+    confidence:
+      extra.method === 'manual'
+        ? 'manual'
+        : gradeConfidence({ last4Agree, merchantAgree, amountDiff, deltaMinutes }),
     method: extra.method ?? 'auto',
     ambiguous: Boolean(extra.ambiguous),
     candidateCount: extra.candidateCount ?? 1,
@@ -284,20 +313,32 @@ function buildMatch(purchase, charge, opts, extra = {}) {
 /**
  * How much should a human trust this pair?
  *   exact   – same card, same cent amount, within a few minutes. Nothing to check.
- *   likely  – one strong signal missing (usually no last-four on the purchase side).
+ *   likely  – one strong signal missing (usually no last-four on the purchase side),
+ *             but something else corroborates: a very close time, or the merchant.
  *   review  – amounts differ, or the only evidence is a coincidental amount+time.
+ *
+ * The card stays the only route to "exact". A merchant is a much weaker identity
+ * — there are only a handful of them — so it lifts a pair out of "review" but
+ * never all the way to certainty.
  */
-function gradeConfidence({ last4Agree, amountDiff, deltaMinutes }) {
+function gradeConfidence({ last4Agree, merchantAgree, amountDiff, deltaMinutes }) {
   const minutes = deltaMinutes === null ? Infinity : Math.abs(deltaMinutes);
   if (amountDiff !== 0) return 'review';
   if (last4Agree && minutes <= 30) return 'exact';
   if (last4Agree || minutes <= 10) return 'likely';
+  if (merchantAgree && minutes <= 60) return 'likely';
   return 'review';
 }
 
 function explainUnmatchedPurchase(purchase, charges, declines, reversals, opts) {
   const cents = toCents(purchase.amount);
   const sameAmount = charges.filter((c) => Math.abs(toCents(c.amount) - cents) <= Math.round(opts.amountTolerance * 100));
+
+  // When the POS says this PO is paid and no charge backs it up, lead with that
+  // — it is the discrepancy worth chasing, not a detail of the search.
+  const claimsPaid = (purchase.paymentState || '').toLowerCase() === 'paid';
+  const prefix = claimsPaid ? 'Marked Paid in your POS, but ' : '';
+  const open = (sentence) => (prefix ? prefix + sentence.charAt(0).toLowerCase() + sentence.slice(1) : sentence);
 
   if (sameAmount.length === 0) {
     const declined = [...declines, ...reversals].find((c) => toCents(c.amount) === cents);
@@ -306,24 +347,31 @@ function explainUnmatchedPurchase(purchase, charges, declines, reversals, opts) 
         ? `A ${money(purchase.amount)} charge on card ${declined.last4} was DECLINED (${declined.declineReason || 'no reason given'}) — this purchase may not be paid for.`
         : `A matching ${money(purchase.amount)} authorization on card ${declined.last4} was reversed.`;
     }
-    return 'No card charge for this amount has been imported yet.';
+    return open('No card charge for this amount has been imported yet.');
   }
 
   const sameCard = sameAmount.filter((c) => !purchase.last4 || !c.last4 || c.last4 === purchase.last4);
   if (sameCard.length === 0) {
-    return `Charges exist for ${money(purchase.amount)} but all are on different cards (purchase used ${purchase.last4}).`;
+    return open(`Charges exist for ${money(purchase.amount)} but all are on different cards (purchase used ${purchase.last4}).`);
   }
 
-  const withinWindow = sameCard.filter(
+  const sameMerchant = sameCard.filter((c) => !purchase.merchant || !c.merchant || c.merchant === purchase.merchant);
+  if (sameMerchant.length === 0) {
+    return open(
+      `Charges exist for ${money(purchase.amount)} but none from ${purchase.vendor || purchase.merchant} — this order was bought there.`,
+    );
+  }
+
+  const withinWindow = sameMerchant.filter(
     (c) =>
       purchase.purchasedAt !== null &&
       c.occurredAt !== null &&
       Math.abs(chargeTime(c, opts) - purchase.purchasedAt) <= opts.timeWindowMinutes * MINUTE,
   );
   if (withinWindow.length === 0) {
-    return `A ${money(purchase.amount)} charge exists on this card but outside the ${opts.timeWindowMinutes}-minute window.`;
+    return open(`A ${money(purchase.amount)} charge exists but outside the ${opts.timeWindowMinutes}-minute window.`);
   }
-  return 'A candidate charge exists but was claimed by a closer-matching purchase.';
+  return open('A candidate charge exists but was claimed by a closer-matching purchase.');
 }
 
 function explainUnmatchedCharge(charge, purchases, opts) {
@@ -337,6 +385,10 @@ function explainUnmatchedCharge(charge, purchases, opts) {
   const sameCard = sameAmount.filter((p) => !p.last4 || !charge.last4 || p.last4 === charge.last4);
   if (sameCard.length === 0) {
     return `Purchases exist for ${money(charge.amount)} but none on card ${charge.last4}.`;
+  }
+  const sameMerchant = sameCard.filter((p) => !p.merchant || !charge.merchant || p.merchant === charge.merchant);
+  if (sameMerchant.length === 0) {
+    return `Purchases exist for ${money(charge.amount)} but none of them were bought from this merchant.`;
   }
   return 'A candidate purchase exists but was claimed by a closer-matching charge.';
 }
@@ -359,11 +411,14 @@ function rankCandidates(purchase, charges, takenCharges, opts, limit = 5) {
           ? (chargeTime(c, opts) - purchase.purchasedAt) / MINUTE
           : null,
       last4Agree: Boolean(purchase.last4 && c.last4 && purchase.last4 === c.last4),
+      merchantAgree: merchantAgrees(purchase, c),
+      merchantConflict: merchantConflict(purchase, c),
     }))
     .sort(
       (a, b) =>
         Math.abs(a.amountDiff) - Math.abs(b.amountDiff) ||
         Number(b.last4Agree) - Number(a.last4Agree) ||
+        Number(b.merchantAgree) - Number(a.merchantAgree) ||
         Math.abs(a.deltaMinutes ?? Infinity) - Math.abs(b.deltaMinutes ?? Infinity),
     )
     .slice(0, limit);
@@ -381,17 +436,23 @@ function rankCandidatesForCharge(charge, purchases, takenPurchases, opts, limit 
       amount: p.amount,
       purchasedAt: p.purchasedAt,
       poId: p.poId,
+      label: p.label,
+      vendor: p.vendor,
+      paymentState: p.paymentState,
       amountDiff: Number((charge.amount - p.amount).toFixed(2)),
       deltaMinutes:
         p.purchasedAt !== null && charge.occurredAt !== null
           ? (chargeTime(charge, opts) - p.purchasedAt) / MINUTE
           : null,
       last4Agree: Boolean(p.last4 && charge.last4 && p.last4 === charge.last4),
+      merchantAgree: merchantAgrees(p, charge),
+      merchantConflict: merchantConflict(p, charge),
     }))
     .sort(
       (a, b) =>
         Math.abs(a.amountDiff) - Math.abs(b.amountDiff) ||
         Number(b.last4Agree) - Number(a.last4Agree) ||
+        Number(b.merchantAgree) - Number(a.merchantAgree) ||
         Math.abs(a.deltaMinutes ?? Infinity) - Math.abs(b.deltaMinutes ?? Infinity),
     )
     .slice(0, limit);
@@ -444,6 +505,11 @@ function buildTotals({
     creditCount: credits.length,
     creditTotal: sum(credits, (c) => c.amount),
     zeroAmountCount: zeroAmountPurchases.length,
+    // Where your POS's payment state disagrees with what the cards actually did.
+    posSaysUnpaidButCharged: matches.filter((m) => m.flags?.includes('pos-says-unpaid')).length,
+    posSaysPaidButNoCharge: unmatchedPurchases.filter(
+      (p) => (p.paymentState || '').toLowerCase() === 'paid',
+    ).length,
     needsReviewCount: reviewCount,
     matchRate: denominator === 0 ? 0 : Number(((matches.length / denominator) * 100).toFixed(1)),
   };

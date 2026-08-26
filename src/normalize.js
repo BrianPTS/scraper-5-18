@@ -8,46 +8,102 @@
  * `chargeTimeOffsetMinutes` setting rather than reinterpreting the strings here.
  */
 
-const PURCHASE_SIGNATURE = ['pos_po_id', 'payment_instrument_last_four', 'purchase_date'];
+const PO_EXPORT_SIGNATURE = ['pos_po_id', 'payment_instrument_last_four', 'purchase_date'];
+const INVENTORY_SIGNATURE = ['PO Id', 'PO Date', 'Total Cost', 'PO Payment State'];
 const CHARGE_SIGNATURE = ['Last 4', 'Authorization Date (UTC)', 'Card Name'];
 
 /**
- * Guess which export a file is, from its header row.
+ * Which export is this, from its header row?
+ *
+ *   po-export  — the per-ticket purchase order export (carries card last-four)
+ *   inventory  — the Purchased Inventory export, one row per PO (no card)
+ *   charges    — the card transaction export
+ *
  * @param {string[]} headers
- * @returns {'purchases'|'charges'|null}
+ * @returns {'po-export'|'inventory'|'charges'|null}
  */
-export function detectKind(headers) {
+export function detectFormat(headers) {
   const set = new Set(headers.map((h) => h.trim()));
-  const purchaseHits = PURCHASE_SIGNATURE.filter((h) => set.has(h)).length;
-  const chargeHits = CHARGE_SIGNATURE.filter((h) => set.has(h)).length;
+  const hits = (signature) => signature.filter((h) => set.has(h)).length;
 
-  if (purchaseHits >= 2 && purchaseHits > chargeHits) return 'purchases';
-  if (chargeHits >= 2 && chargeHits > purchaseHits) return 'charges';
+  const poHits = hits(PO_EXPORT_SIGNATURE);
+  const invHits = hits(INVENTORY_SIGNATURE);
+  const chargeHits = hits(CHARGE_SIGNATURE);
+  const best = Math.max(poHits, invHits, chargeHits);
+
+  if (best >= 2) {
+    if (invHits === best) return 'inventory';
+    if (poHits === best) return 'po-export';
+    return 'charges';
+  }
   // Fall back to single unmistakable columns.
-  if (set.has('pos_po_id') || set.has('event_name')) return 'purchases';
+  if (set.has('pos_po_id') || set.has('event_name')) return 'po-export';
+  if (set.has('PO Id') || set.has('PO Payment State')) return 'inventory';
   if (set.has('Last 4') || set.has('Decline Reason')) return 'charges';
   return null;
 }
 
+/** Back-compat wrapper: the two purchase formats both produce purchases. */
+export function detectKind(headers) {
+  const format = detectFormat(headers);
+  if (!format) return null;
+  return format === 'charges' ? 'charges' : 'purchases';
+}
+
 /**
- * Parse the timestamp formats found in both exports:
- *   "2026-08-26 16:50:13"     (24h, purchases)
- *   "2026-08-26 05:49:07PM"   (12h, card transactions)
- *   "2026-08-26"              (date only)
- *   "2026-08-26T16:50:13Z"    (ISO, tolerated)
+ * Parse every timestamp shape the three exports produce:
+ *   "2026-08-26 16:50:13"              (24h — purchase order export)
+ *   "2026-08-26 05:49:07PM"            (12h — card transactions)
+ *   "8/26/2026 3:24:06 AM +00:00"      (US order with offset — Purchased Inventory)
+ *   "2026-08-26"                       (date only)
+ *   "2026-08-26T16:50:13Z"             (ISO, tolerated)
  *
- * @param {string} value
- * @returns {number|null} epoch milliseconds, interpreted as wall-clock UTC
+ * A trailing UTC offset is applied when present, so a feed that stamps a real
+ * offset lands on the same UTC reading as the card export. Everything without
+ * an offset is taken at face value as wall clock — the three feeds agree on it.
+ *
+ * @param {string|number} value
+ * @returns {number|null} epoch milliseconds
  */
 export function parseTimestamp(value) {
-  if (!value) return null;
+  if (value === null || value === undefined || value === '') return null;
   const raw = String(value).trim();
   if (!raw) return null;
+
+  // Spreadsheets sometimes hand back a date as an Excel serial number.
+  if (/^\d{4,5}(\.\d+)?$/.test(raw)) {
+    const serial = Number(raw);
+    if (serial > 20000 && serial < 90000) {
+      return Math.round((serial - 25569) * 86400000);
+    }
+  }
+
+  const offsetMatch = raw.match(/([+-])(\d{2}):?(\d{2})$/);
+  const offsetMs = offsetMatch
+    ? (offsetMatch[1] === '-' ? 1 : -1) * (Number(offsetMatch[2]) * 60 + Number(offsetMatch[3])) * 60000
+    : 0;
+
+  // US order: 8/26/2026 3:24:06 AM
+  const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[T ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?)?/);
+  if (us) {
+    let hour = us[4] ? Number(us[4]) : 0;
+    if (us[7]) {
+      const upper = us[7].toUpperCase();
+      if (upper === 'PM' && hour < 12) hour += 12;
+      if (upper === 'AM' && hour === 12) hour = 0;
+    }
+    return (
+      Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]), hour, Number(us[5] || 0), Number(us[6] || 0)) + offsetMs
+    );
+  }
 
   const m = raw.match(
     /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?)?/,
   );
   if (!m) {
+    // Only fall back to the engine's own parser for something that at least
+    // looks like a date. Without this guard a bare "142" becomes the year 142.
+    if (!/[-/:a-zA-Z]/.test(raw)) return null;
     const fallback = Date.parse(raw);
     return Number.isNaN(fallback) ? null : fallback;
   }
@@ -60,7 +116,9 @@ export function parseTimestamp(value) {
     if (upper === 'AM' && hour === 12) hour = 0;
   }
 
-  return Date.UTC(Number(y), Number(mo) - 1, Number(d), hour, Number(min || 0), Number(sec || 0));
+  return (
+    Date.UTC(Number(y), Number(mo) - 1, Number(d), hour, Number(min || 0), Number(sec || 0)) + offsetMs
+  );
 }
 
 /**
@@ -118,6 +176,27 @@ export function normalizeLast4(value) {
 const clean = (value) => String(value ?? '').trim();
 
 /**
+ * Reduce a vendor name or a card descriptor to a merchant tag.
+ *
+ * With the Purchased Inventory export there is no card last-four to tell two
+ * same-amount purchases apart, so the merchant becomes the disambiguator:
+ * a SeatGeek order can never be the TM charge sitting next to it.
+ *
+ * @param {string} text
+ * @returns {'ticketmaster'|'seatgeek'|'stubhub'|'vividseats'|'axs'|''} '' means "cannot tell"
+ */
+export function merchantTag(text) {
+  const s = clean(text).toLowerCase();
+  if (!s) return '';
+  if (s.includes('ticketmaster') || /\btm\b/.test(s) || s.startsWith('tm ') || s.includes('tm*')) return 'ticketmaster';
+  if (s.includes('seatgeek')) return 'seatgeek';
+  if (s.includes('stubhub')) return 'stubhub';
+  if (s.includes('vivid')) return 'vividseats';
+  if (s.includes('axs')) return 'axs';
+  return ''; // "Unknown Vendor", a bank's generic descriptor, anything else
+}
+
+/**
  * Normalize the purchase-order export.
  * @param {Record<string,string>[]} rows
  * @returns {import('./types.js').Purchase[]}
@@ -139,7 +218,12 @@ export function normalizePurchases(rows) {
 
     out.push({
       kind: 'purchase',
+      source: 'po-export',
       id,
+      label: clean(row.event_name) || (clean(row.pos_po_id) ? `PO ${clean(row.pos_po_id)}` : `Purchase ${id}`),
+      vendor: '',
+      merchant: '',
+      paymentState: '',
       poId: clean(row.pos_po_id),
       remoteId: clean(row.remote_id),
       legacyRemoteId: clean(row.legacy_remote_id),
@@ -161,6 +245,65 @@ export function normalizePurchases(rows) {
       refundStatus: clean(row.refund_status),
       status: clean(row.status),
       eventStatus: clean(row.event_status),
+      purchasedAt,
+      day: businessDay(purchasedAt),
+      raw: row,
+    });
+  }
+  return out;
+}
+
+/**
+ * Normalize the Purchased Inventory export — one row per purchase order.
+ *
+ * This export trades detail for coverage: no event name, no card digits, but a
+ * `PO Payment State` your POS believes and a `Vendor` the card descriptor can
+ * be checked against. The trailing totals row (blank PO Id) is skipped.
+ *
+ * @param {Record<string,string>[]} rows
+ * @returns {object[]}
+ */
+export function normalizeInventoryPurchases(rows) {
+  const out = [];
+  for (const row of rows) {
+    const poId = clean(row['PO Id']);
+    if (!poId || !/\d/.test(poId)) continue; // totals row, or a blank line
+
+    const purchasedAt = parseTimestamp(row['PO Date']);
+    const amount = parseAmount(row['Total Cost']) ?? 0;
+    const vendor = clean(row.Vendor);
+
+    out.push({
+      kind: 'purchase',
+      source: 'inventory',
+      id: poId,
+      label: `${vendor || 'Purchase'} · PO ${poId}`,
+      poId,
+      remoteId: '',
+      legacyRemoteId: '',
+      webId: '',
+      account: clean(row['Vendor Account']),
+      accountId: '',
+      purchasedBy: clean(row['Purchased By']),
+      vendor,
+      merchant: merchantTag(vendor),
+      paymentState: clean(row['PO Payment State']),
+      event: '',
+      eventDate: null,
+      venue: '',
+      seats: '',
+      qty: Number(clean(row['Total Quantity'])) || 0,
+      stockType: '',
+      tags: '',
+      brand: '',
+      last4: '',
+      amount,
+      originalAmount: amount,
+      websitePrice: parseAmount(row['Total Website Price']) ?? 0,
+      refundedAmount: 0,
+      refundStatus: '',
+      status: clean(row['PO Payment State']),
+      eventStatus: '',
       purchasedAt,
       day: businessDay(purchasedAt),
       raw: row,
@@ -204,6 +347,7 @@ export function normalizeCharges(rows) {
       type,
       status,
       declineReason: clean(row['Decline Reason']),
+      merchant: merchantTag(clean(row.Description) || clean(row['External Description'])),
       cardId: clean(row['Card ID']),
       last4: normalizeLast4(row['Last 4']),
       cardName: clean(row['Card Name']),
@@ -229,12 +373,16 @@ export function normalizeCharges(rows) {
  * @param {'purchases'|'charges'|null} [forcedKind]
  * @returns {{kind: 'purchases'|'charges', records: Array<object>}}
  */
-export function normalizeParsed(parsed, forcedKind) {
-  const kind = forcedKind || detectKind(parsed.headers);
-  if (kind === 'purchases') return { kind, records: normalizePurchases(parsed.rows) };
-  if (kind === 'charges') return { kind, records: normalizeCharges(parsed.rows) };
+export function normalizeParsed(parsed, forcedFormat) {
+  const format = forcedFormat || detectFormat(parsed.headers);
+
+  if (format === 'po-export') return { kind: 'purchases', format, records: normalizePurchases(parsed.rows) };
+  if (format === 'inventory') return { kind: 'purchases', format, records: normalizeInventoryPurchases(parsed.rows) };
+  if (format === 'charges') return { kind: 'charges', format, records: normalizeCharges(parsed.rows) };
+  if (format === 'purchases') return { kind: 'purchases', format: 'po-export', records: normalizePurchases(parsed.rows) };
+
   throw new Error(
-    'Could not tell whether this file is a purchase export or a card transaction export. ' +
-      'Expected either a "pos_po_id" column or a "Last 4" column.',
+    'Could not tell what this file is. A purchase export needs a "pos_po_id" or "PO Id" column; ' +
+      'a card transaction export needs a "Last 4" column.',
   );
 }

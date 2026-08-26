@@ -313,3 +313,40 @@ test('clearing wipes the data but leaves the server healthy', async () => {
   assert.equal(body.counts.charges, 0);
   assert.equal(body.matches.length, 0);
 });
+
+test('accepts a spreadsheet over the import API', async () => {
+  const bytes = await readFile(join(SAMPLES, 'sample-inventory.xlsx'));
+  const { status, body } = await api(
+    '/api/import',
+    postJson('', { files: [{ filename: 'inventory.xlsx', base64: bytes.toString('base64') }] }),
+  );
+
+  assert.equal(status, 200);
+  assert.deepEqual(body.errors, []);
+  assert.equal(body.imported[0].format, 'inventory');
+  assert.equal(body.imported[0].rows, 10);
+
+  const report = await api('/api/report');
+  assert.ok(report.body.counts.purchases >= 10);
+  assert.ok(report.body.coverage, 'the report should carry a coverage assessment');
+});
+
+test('the inventory export replaces the same POs from the other export', async () => {
+  // Start clean, load the per-ticket export, then the same POs as inventory.
+  await api('/api/reset', postJson('', {}));
+  await api('/api/import', postJson('', {
+    files: [{ filename: 'sample-purchases.csv', text: await readFile(join(SAMPLES, 'sample-purchases.csv'), 'utf8') }],
+  }));
+  const first = await api('/api/report');
+  assert.equal(first.body.counts.purchases, 10);
+
+  const bytes = await readFile(join(SAMPLES, 'sample-inventory.xlsx'));
+  const { body } = await api('/api/import', postJson('', {
+    files: [{ filename: 'inventory.xlsx', base64: bytes.toString('base64') }],
+  }));
+  assert.equal(body.imported[0].replaced, 9);
+
+  const after = await api('/api/report');
+  // 9 replaced + 1 row with no PO id that nothing can stand for, + 10 incoming.
+  assert.equal(after.body.counts.purchases, 11);
+});

@@ -11,7 +11,7 @@
     <div id="drop-overlay" class="drop-overlay" hidden>
       <div>
         <strong>Drop CSV exports</strong>
-        <span>Purchase orders and card transactions are detected automatically</span>
+        <span>CSV or XLSX — purchases and card transactions are detected automatically</span>
       </div>
     </div>
 
@@ -34,10 +34,12 @@
         <button id="settings-btn" class="btn ghost" title="Matching rules">⚙</button>
         <span id="live" class="live" title="Live connection"><i></i>live</span>
       </div>
-      <input id="file-input" type="file" accept=".csv,text/csv" multiple hidden />
+      <input id="file-input" type="file" accept=".csv,.xlsx,text/csv" multiple hidden />
     </header>
 
     <section class="kpis" id="kpis"></section>
+
+    <section class="coverage" id="coverage" hidden></section>
 
     <section class="panel" id="settings-panel" hidden>
       <h2>Matching rules</h2>

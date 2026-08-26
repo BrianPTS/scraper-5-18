@@ -33,6 +33,7 @@ export function buildReport(store, query = {}) {
     generatedAt: new Date().toISOString(),
     day: day ?? 'all',
     days,
+    coverage: assessCoverage(days, day, purchases, charges),
     counts: {
       purchases: purchases.length,
       charges: charges.length,
@@ -40,6 +41,89 @@ export function buildReport(store, query = {}) {
     settings: store.settings,
     imports: store.data.imports.slice(0, 10),
     ...scoped,
+  };
+}
+
+/**
+ * Are the two feeds actually covering the same days?
+ *
+ * This matters more than it sounds. Export a week of purchases against one day
+ * of card activity and the dashboard will report six days of "unpaid" orders
+ * that are nothing of the sort. Naming the gap keeps a reporting artefact from
+ * being read as missing money.
+ *
+ * @param {Array<{day: string, purchases: number, charges: number}>} days
+ * @param {string|null} scopedDay
+ */
+export function assessCoverage(days, scopedDay, purchases = [], charges = []) {
+  const relevant = scopedDay ? days.filter((d) => d.day === scopedDay) : days;
+
+  // A day only counts as "missing" when the side that *is* there amounts to
+  // something. A lone settlement that authorized the previous evening will
+  // otherwise report the whole of yesterday as uncovered.
+  const material = (count, total) => count >= 3 || (total > 0 && count / total > 0.1);
+  const totalPurchases = purchases.length || days.reduce((n, d) => n + d.purchases, 0);
+  const totalCharges = charges.length || days.reduce((n, d) => n + d.charges, 0);
+
+  const missingCharges = relevant
+    .filter((d) => d.charges === 0 && material(d.purchases, totalPurchases))
+    .map((d) => d.day);
+  const missingPurchases = relevant
+    .filter((d) => d.purchases === 0 && material(d.charges, totalCharges))
+    .map((d) => d.day);
+  const both = relevant.filter((d) => d.purchases > 0 && d.charges > 0).map((d) => d.day);
+
+  // Whole missing days are the obvious case. The subtler one — and the one that
+  // actually bites — is two exports that share a day but stop at different
+  // times: pull purchases up to 03:24 against card activity running to 17:49
+  // and the afternoon's orders look unpaid when they are simply not in the file.
+  const range = (rows, key) => {
+    const stamps = rows.map((r) => r[key]).filter((t) => typeof t === 'number' && !Number.isNaN(t));
+    return stamps.length ? { from: Math.min(...stamps), to: Math.max(...stamps) } : null;
+  };
+
+  const purchaseRange = range(purchases, 'purchasedAt');
+  const chargeRange = range(charges, 'occurredAt');
+  let overlap = null;
+  let trimmed = null;
+
+  if (purchaseRange && chargeRange) {
+    const from = Math.max(purchaseRange.from, chargeRange.from);
+    const to = Math.min(purchaseRange.to, chargeRange.to);
+    overlap = to >= from ? { from, to } : null;
+
+    // Judge the mismatch by how many rows actually fall outside, not by the
+    // extremes: one stray refund from last night is not a coverage problem,
+    // while forty orders the card export never reached certainly is.
+    // An hour of slack at each end absorbs the lag between the two feeds.
+    const SLACK = 60 * 60 * 1000;
+    const outside = (rows, key, range) =>
+      rows.filter((r) => typeof r[key] === 'number' && (r[key] < range.from - SLACK || r[key] > range.to + SLACK))
+        .length;
+
+    const purchasesOutside = outside(purchases, 'purchasedAt', chargeRange);
+    const chargesOutside = outside(charges, 'occurredAt', purchaseRange);
+    const material = (count, total) => count >= 2 && count / total > 0.1;
+
+    if (material(purchasesOutside, purchases.length) || material(chargesOutside, charges.length)) {
+      trimmed = {
+        purchasesOutside,
+        chargesOutside,
+        purchaseCount: purchases.length,
+        chargeCount: charges.length,
+      };
+    }
+  }
+
+  return {
+    daysMissingCharges: missingCharges,
+    daysMissingPurchases: missingPurchases,
+    daysWithBoth: both,
+    purchaseRange,
+    chargeRange,
+    overlap,
+    misalignedWindows: trimmed,
+    complete: missingCharges.length === 0 && missingPurchases.length === 0 && !trimmed,
   };
 }
 
@@ -155,6 +239,8 @@ function recomputeTotals({
     creditCount: credits.length,
     creditTotal: sum(credits, (c) => c.amount),
     zeroAmountCount: zeroAmountPurchases.length,
+    posSaysUnpaidButCharged: matches.filter((m) => m.flags?.includes('pos-says-unpaid')).length,
+    posSaysPaidButNoCharge: unmatchedPurchases.filter((p) => (p.paymentState || '').toLowerCase() === 'paid').length,
     needsReviewCount: matches.filter((m) => m.confidence === 'review' || m.ambiguous).length,
     matchRate: denominator === 0 ? 0 : Number(((matches.length / denominator) * 100).toFixed(1)),
   };

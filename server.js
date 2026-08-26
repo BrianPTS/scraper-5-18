@@ -16,6 +16,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseCsv, toCsv } from './src/csv.js';
+import { looksLikeXlsx, parseXlsx } from './src/xlsx.js';
 import { formatTimestamp, normalizeParsed } from './src/normalize.js';
 import { buildReport } from './src/report.js';
 import { Store, defaultStorePath } from './src/store.js';
@@ -47,23 +48,31 @@ const MIME = {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse one CSV payload and merge it into the store.
- * @param {{filename: string, text: string, kind?: 'purchases'|'charges', source?: string}} input
+ * Parse one uploaded file — CSV text or .xlsx bytes — and merge it into the store.
+ * @param {{filename: string, text?: string, bytes?: Uint8Array, format?: string, source?: string}} input
  */
-function importCsv({ filename, text, kind, source = 'upload' }) {
-  const parsed = parseCsv(text);
+async function importFile({ filename, text, bytes, format, source = 'upload' }) {
+  let parsed;
+  if (bytes && looksLikeXlsx(bytes)) {
+    parsed = await parseXlsx(bytes);
+  } else {
+    const asText = text ?? Buffer.from(bytes ?? []).toString('utf8');
+    parsed = parseCsv(asText);
+  }
   if (parsed.headers.length === 0) throw new Error(`${filename}: file is empty.`);
 
-  const { kind: detected, records } = normalizeParsed(parsed, kind);
+  const { kind: detected, format: detectedFormat, records } = normalizeParsed(parsed, format);
   const result = store.upsert(detected, records);
 
   const entry = {
     filename,
     kind: detected,
+    format: detectedFormat,
     source,
     rows: records.length,
     added: result.added,
     updated: result.updated,
+    replaced: result.replaced,
     at: new Date().toISOString(),
   };
   store.recordImport(entry);
@@ -88,7 +97,8 @@ async function scanInbox() {
 
   for (const entry of entries) {
     if (!entry.isFile()) continue;
-    if (extname(entry.name).toLowerCase() !== '.csv') continue;
+    const ext = extname(entry.name).toLowerCase();
+    if (ext !== '.csv' && ext !== '.xlsx') continue;
 
     const full = join(INBOX_DIR, entry.name);
     let info;
@@ -107,8 +117,8 @@ async function scanInbox() {
     }
 
     try {
-      const text = await readFile(full, 'utf8');
-      const entryLog = importCsv({ filename: entry.name, text, source: 'inbox' });
+      const buffer = await readFile(full);
+      const entryLog = await importFile({ filename: entry.name, bytes: new Uint8Array(buffer), source: 'inbox' });
       mkdirSync(PROCESSED_DIR, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       await rename(full, join(PROCESSED_DIR, `${stamp}__${entry.name}`));
@@ -375,16 +385,19 @@ async function handleApi(req, res, url) {
     const results = [];
     const errors = [];
     for (const file of files) {
-      if (!file || typeof file.text !== 'string') {
+      const hasText = file && typeof file.text === 'string';
+      const hasBytes = file && typeof file.base64 === 'string';
+      if (!hasText && !hasBytes) {
         errors.push({ filename: file?.filename ?? '(unnamed)', error: 'No file contents received.' });
         continue;
       }
       try {
         results.push(
-          importCsv({
+          await importFile({
             filename: file.filename || 'upload.csv',
-            text: file.text,
-            kind: file.kind || undefined,
+            text: hasText ? file.text : undefined,
+            bytes: hasBytes ? new Uint8Array(Buffer.from(file.base64, 'base64')) : undefined,
+            format: file.format || undefined,
           }),
         );
       } catch (err) {

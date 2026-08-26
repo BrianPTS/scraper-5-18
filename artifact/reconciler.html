@@ -299,6 +299,20 @@
     color: var(--bad);
   }
 
+  /* A gap in what was imported is not the same as missing money — say which. */
+  .notice {
+    margin-top: 14px;
+    padding: 10px 14px;
+    background: var(--warn-wash);
+    border: 1px solid var(--warn);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 12.5px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
   /* ---------- ledger sections ---------- */
 
   .sections {
@@ -759,7 +773,7 @@
     </div>
   </header>
 
-  <input id="file-input" type="file" accept=".csv,text/csv" multiple hidden />
+  <input id="file-input" type="file" accept=".csv,.xlsx,text/csv" multiple hidden />
 
   <section class="welcome" id="welcome">
     <h2>Drop in today's two exports and see what does not line up.</h2>
@@ -817,6 +831,8 @@
     <p class="band-label">Exceptions</p>
     <div class="figures" id="figures-exceptions"></div>
 
+    <div class="notice" id="coverage" hidden></div>
+
     <div class="sections" id="sections" role="tablist"></div>
     <div class="filterbar">
       <input id="search" type="search" placeholder="Filter by event, card, account, amount, id…" />
@@ -835,7 +851,7 @@
 <div class="dropzone" id="dropzone" hidden>
   <div>
     <strong>Drop CSV exports</strong>
-    <span>Purchases and card transactions are told apart automatically</span>
+    <span>CSV or XLSX — purchases and card transactions are told apart automatically</span>
   </div>
 </div>
 
@@ -944,36 +960,89 @@
     // event, so they are parsed to the same value and never timezone-shifted.
     // =====================================================================
 
-    const PURCHASE_SIGNATURE = ['pos_po_id', 'payment_instrument_last_four', 'purchase_date'];
+    const PO_EXPORT_SIGNATURE = ['pos_po_id', 'payment_instrument_last_four', 'purchase_date'];
+    const INVENTORY_SIGNATURE = ['PO Id', 'PO Date', 'Total Cost', 'PO Payment State'];
     const CHARGE_SIGNATURE = ['Last 4', 'Authorization Date (UTC)', 'Card Name'];
 
-    function detectKind(headers) {
+    // po-export = the per-ticket purchase orders (carries card last-four)
+    // inventory = Purchased Inventory, one row per PO (no card, but a vendor)
+    // charges   = the card transaction feed
+    function detectFormat(headers) {
       const set = new Set(
         headers.map(function (h) {
           return h.trim();
         }),
       );
-      const p = PURCHASE_SIGNATURE.filter(function (h) {
-        return set.has(h);
-      }).length;
-      const c = CHARGE_SIGNATURE.filter(function (h) {
-        return set.has(h);
-      }).length;
-      if (p >= 2 && p > c) return 'purchases';
-      if (c >= 2 && c > p) return 'charges';
-      if (set.has('pos_po_id') || set.has('event_name')) return 'purchases';
+      const hits = function (sig) {
+        return sig.filter(function (h) {
+          return set.has(h);
+        }).length;
+      };
+      const po = hits(PO_EXPORT_SIGNATURE);
+      const inv = hits(INVENTORY_SIGNATURE);
+      const ch = hits(CHARGE_SIGNATURE);
+      const best = Math.max(po, inv, ch);
+
+      if (best >= 2) {
+        if (inv === best) return 'inventory';
+        if (po === best) return 'po-export';
+        return 'charges';
+      }
+      if (set.has('pos_po_id') || set.has('event_name')) return 'po-export';
+      if (set.has('PO Id') || set.has('PO Payment State')) return 'inventory';
       if (set.has('Last 4') || set.has('Decline Reason')) return 'charges';
       return null;
     }
 
+    /** Reduce a vendor name or card descriptor to a merchant tag. '' = cannot tell. */
+    function merchantTag(text) {
+      const t = String(text === null || text === undefined ? '' : text).trim().toLowerCase();
+      if (!t) return '';
+      if (t.indexOf('ticketmaster') !== -1 || /\btm\b/.test(t) || t.indexOf('tm*') === 0 || t.indexOf('tm ') === 0)
+        return 'ticketmaster';
+      if (t.indexOf('seatgeek') !== -1) return 'seatgeek';
+      if (t.indexOf('stubhub') !== -1) return 'stubhub';
+      if (t.indexOf('vivid') !== -1) return 'vividseats';
+      if (t.indexOf('axs') !== -1) return 'axs';
+      return '';
+    }
+
+    // Handles all three feeds:
+    //   2026-08-26 16:50:13            purchase order export
+    //   2026-08-26 05:49:07PM          card transactions
+    //   8/26/2026 3:24:06 AM +00:00    Purchased Inventory
     function parseTimestamp(value) {
-      if (!value) return null;
+      if (value === null || value === undefined || value === '') return null;
       const raw = String(value).trim();
       if (!raw) return null;
+
+      // A spreadsheet may hand a date over as an Excel serial number.
+      if (/^\d{4,5}(\.\d+)?$/.test(raw)) {
+        const serial = Number(raw);
+        if (serial > 20000 && serial < 90000) return Math.round((serial - 25569) * 86400000);
+      }
+
+      const off = raw.match(/([+-])(\d{2}):?(\d{2})$/);
+      const offsetMs = off ? (off[1] === '-' ? 1 : -1) * (Number(off[2]) * 60 + Number(off[3])) * 60000 : 0;
+
+      const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[T ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?)?/);
+      if (us) {
+        let h = us[4] ? Number(us[4]) : 0;
+        if (us[7]) {
+          const up = us[7].toUpperCase();
+          if (up === 'PM' && h < 12) h += 12;
+          if (up === 'AM' && h === 12) h = 0;
+        }
+        return (
+          Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]), h, Number(us[5] || 0), Number(us[6] || 0)) + offsetMs
+        );
+      }
+
       const m = raw.match(
         /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?)?/,
       );
       if (!m) {
+        if (!/[-/:a-zA-Z]/.test(raw)) return null;
         const fallback = Date.parse(raw);
         return isNaN(fallback) ? null : fallback;
       }
@@ -984,7 +1053,9 @@
         if (up === 'PM' && hour < 12) hour += 12;
         if (up === 'AM' && hour === 12) hour = 0;
       }
-      return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), hour, Number(m[5] || 0), Number(m[6] || 0));
+      return (
+        Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), hour, Number(m[5] || 0), Number(m[6] || 0)) + offsetMs
+      );
     }
 
     function formatTimestamp(ms) {
@@ -1040,7 +1111,12 @@
         const purchasedAt = parseTimestamp(row.purchase_date);
         out.push({
           kind: 'purchase',
+          source: 'po-export',
           id: id,
+          label: clean(row.event_name) || (clean(row.pos_po_id) ? 'PO ' + clean(row.pos_po_id) : 'Purchase ' + id),
+          vendor: '',
+          merchant: '',
+          paymentState: '',
           poId: clean(row.pos_po_id),
           account: clean(row.username),
           event: clean(row.event_name),
@@ -1088,6 +1164,7 @@
           type: type,
           status: status,
           declineReason: clean(row['Decline Reason']),
+          merchant: merchantTag(clean(row.Description) || clean(row['External Description'])),
           last4: normalizeLast4(row['Last 4']),
           cardName: clean(row['Card Name']),
           cardGroup: clean(row['Card Group Name']),
@@ -1104,12 +1181,60 @@
       return out;
     }
 
+    /**
+     * The Purchased Inventory export: one row per purchase order. No event name
+     * and no card digits, but it carries the vendor and the payment state your
+     * POS believes. The trailing totals row (blank PO Id) is skipped.
+     */
+    function normalizeInventoryPurchases(rows) {
+      const out = [];
+      rows.forEach(function (row) {
+        const poId = clean(row['PO Id']);
+        if (!poId || !/\d/.test(poId)) return; // totals row or a blank line
+
+        const purchasedAt = parseTimestamp(row['PO Date']);
+        const amount = parseAmount(row['Total Cost']) || 0;
+        const vendor = clean(row.Vendor);
+
+        out.push({
+          kind: 'purchase',
+          source: 'inventory',
+          id: poId,
+          label: (vendor || 'Purchase') + ' · PO ' + poId,
+          poId: poId,
+          account: clean(row['Vendor Account']),
+          purchasedBy: clean(row['Purchased By']),
+          vendor: vendor,
+          merchant: merchantTag(vendor),
+          paymentState: clean(row['PO Payment State']),
+          event: '',
+          eventDate: null,
+          venue: '',
+          seats: '',
+          qty: Number(clean(row['Total Quantity'])) || 0,
+          stockType: '',
+          tags: '',
+          brand: '',
+          last4: '',
+          amount: amount,
+          refundedAmount: 0,
+          refundStatus: '',
+          status: clean(row['PO Payment State']),
+          purchasedAt: purchasedAt,
+          day: businessDay(purchasedAt),
+        });
+      });
+      return out;
+    }
+
     function normalizeParsed(parsed) {
-      const kind = detectKind(parsed.headers);
-      if (kind === 'purchases') return { kind: kind, records: normalizePurchases(parsed.rows) };
-      if (kind === 'charges') return { kind: kind, records: normalizeCharges(parsed.rows) };
+      const format = detectFormat(parsed.headers);
+      if (format === 'po-export') return { kind: 'purchases', format: format, records: normalizePurchases(parsed.rows) };
+      if (format === 'inventory')
+        return { kind: 'purchases', format: format, records: normalizeInventoryPurchases(parsed.rows) };
+      if (format === 'charges') return { kind: 'charges', format: format, records: normalizeCharges(parsed.rows) };
       throw new Error(
-        'This does not look like either export. A purchase file needs a "pos_po_id" column; a card file needs a "Last 4" column.',
+        'This does not look like any of the exports. A purchase file needs a "pos_po_id" or "PO Id" column; a card file needs a "Last 4" column.',
       );
     }
 
@@ -1126,7 +1251,16 @@
     };
 
     const MINUTE = 60000;
-    const SCORE = { last4Match: 10000, exactAmount: 1000, settled: 50, minutePenalty: 1 };
+    const SCORE = { last4Match: 10000, exactAmount: 1000, merchantMatch: 500, settled: 50, minutePenalty: 1 };
+
+    // With no card last-four in the inventory export, the merchant becomes the
+    // thing that keeps two same-amount purchases from swapping charges.
+    function merchantConflict(p, c) {
+      return Boolean(p.merchant && c.merchant && p.merchant !== c.merchant);
+    }
+    function merchantAgrees(p, c) {
+      return Boolean(p.merchant && c.merchant && p.merchant === c.merchant);
+    }
 
     function toCents(a) {
       return Math.round((Number(a) || 0) * 100);
@@ -1141,11 +1275,14 @@
       return '$' + (Number(a) || 0).toFixed(2);
     }
 
+    // The card stays the only route to 'exact'. A merchant is a much weaker
+    // identity, so it lifts a pair out of 'review' but never to certainty.
     function gradeConfidence(o) {
       const minutes = o.deltaMinutes === null ? Infinity : Math.abs(o.deltaMinutes);
       if (o.amountDiff !== 0) return 'review';
       if (o.last4Agree && minutes <= 30) return 'exact';
       if (o.last4Agree || minutes <= 10) return 'likely';
+      if (o.merchantAgree && minutes <= 60) return 'likely';
       return 'review';
     }
 
@@ -1158,6 +1295,15 @@
       const deltaMinutes = delta === null ? null : delta / MINUTE;
       const amountDiff = Number((charge.amount - purchase.amount).toFixed(2));
       const last4Agree = Boolean(purchase.last4 && charge.last4 && purchase.last4 === charge.last4);
+      const merchantAgree = merchantAgrees(purchase, charge);
+
+      // Your POS's opinion against what the card actually did. A charge exists
+      // here by definition, so "NotPaid" is the discrepancy worth showing.
+      const flags = [];
+      const payState = (purchase.paymentState || '').toLowerCase();
+      if (payState === 'notpaid' || payState === 'not paid') flags.push('pos-says-unpaid');
+      if (payState === 'refund needed') flags.push('pos-says-refund-needed');
+
       return {
         id: purchase.id + '::' + charge.id,
         purchase: purchase,
@@ -1166,10 +1312,17 @@
         deltaMinutes: deltaMinutes,
         amountDiff: amountDiff,
         last4Agree: last4Agree,
+        merchantAgree: merchantAgree,
+        flags: flags,
         confidence:
           extra.method === 'manual'
             ? 'manual'
-            : gradeConfidence({ last4Agree: last4Agree, amountDiff: amountDiff, deltaMinutes: deltaMinutes }),
+            : gradeConfidence({
+                last4Agree: last4Agree,
+                merchantAgree: merchantAgree,
+                amountDiff: amountDiff,
+                deltaMinutes: deltaMinutes,
+              }),
         method: extra.method || 'auto',
         ambiguous: Boolean(extra.ambiguous),
         note: extra.note || '',
@@ -1183,6 +1336,15 @@
         return Math.abs(toCents(c.amount) - cents) <= tol;
       });
 
+      // When the POS says this PO is paid and nothing backs it up, lead with
+      // that — it is the discrepancy, not a detail of the search.
+      const claimsPaid = (purchase.paymentState || '').toLowerCase() === 'paid';
+      const open = function (sentence) {
+        return claimsPaid
+          ? 'Marked Paid in your POS, but ' + sentence.charAt(0).toLowerCase() + sentence.slice(1)
+          : sentence;
+      };
+
       if (!sameAmount.length) {
         const dead = declines.concat(reversals).find(function (c) {
           return toCents(c.amount) === cents;
@@ -1193,16 +1355,29 @@
                 (dead.declineReason || 'no reason given') + ') — this purchase may not be paid for.'
             : 'A matching ' + money(purchase.amount) + ' authorization on card ' + dead.last4 + ' was reversed.';
         }
-        return 'No card charge for this amount has been imported yet.';
+        return open('No card charge for this amount has been imported yet.');
       }
 
       const sameCard = sameAmount.filter(function (c) {
         return !purchase.last4 || !c.last4 || c.last4 === purchase.last4;
       });
       if (!sameCard.length) {
-        return 'Charges exist for ' + money(purchase.amount) + ' but all are on different cards (purchase used ' + purchase.last4 + ').';
+        return open(
+          'Charges exist for ' + money(purchase.amount) + ' but all are on different cards (purchase used ' + purchase.last4 + ').',
+        );
       }
-      const inWindow = sameCard.filter(function (c) {
+
+      const sameMerchant = sameCard.filter(function (c) {
+        return !purchase.merchant || !c.merchant || c.merchant === purchase.merchant;
+      });
+      if (!sameMerchant.length) {
+        return open(
+          'Charges exist for ' + money(purchase.amount) + ' but none from ' + (purchase.vendor || purchase.merchant) +
+            ' — this order was bought there.',
+        );
+      }
+
+      const inWindow = sameMerchant.filter(function (c) {
         return (
           purchase.purchasedAt !== null &&
           c.occurredAt !== null &&
@@ -1210,9 +1385,9 @@
         );
       });
       if (!inWindow.length) {
-        return 'A ' + money(purchase.amount) + ' charge exists on this card but outside the ' + opts.timeWindowMinutes + '-minute window.';
+        return open('A ' + money(purchase.amount) + ' charge exists but outside the ' + opts.timeWindowMinutes + '-minute window.');
       }
-      return 'A candidate charge exists but was claimed by a closer-matching purchase.';
+      return open('A candidate charge exists but was claimed by a closer-matching purchase.');
     }
 
     function explainUnmatchedCharge(charge, purchases, opts) {
@@ -1228,6 +1403,12 @@
         return !p.last4 || !charge.last4 || p.last4 === charge.last4;
       });
       if (!sameCard.length) return 'Purchases exist for ' + money(charge.amount) + ' but none on card ' + charge.last4 + '.';
+      const sameMerchant = sameCard.filter(function (p) {
+        return !p.merchant || !charge.merchant || p.merchant === charge.merchant;
+      });
+      if (!sameMerchant.length) {
+        return 'Purchases exist for ' + money(charge.amount) + ' but none of them were bought from this merchant.';
+      }
       return 'A candidate purchase exists but was claimed by a closer-matching charge.';
     }
 
@@ -1251,6 +1432,7 @@
                 ? (chargeTime(c, opts) - purchase.purchasedAt) / MINUTE
                 : null,
             last4Agree: Boolean(purchase.last4 && c.last4 && purchase.last4 === c.last4),
+            merchantAgree: merchantAgrees(purchase, c),
           };
         })
         .sort(function (a, b) {
@@ -1283,7 +1465,11 @@
               p.purchasedAt !== null && charge.occurredAt !== null
                 ? (chargeTime(charge, opts) - p.purchasedAt) / MINUTE
                 : null,
+            label: p.label,
+            vendor: p.vendor,
+            paymentState: p.paymentState,
             last4Agree: Boolean(p.last4 && charge.last4 && p.last4 === charge.last4),
+            merchantAgree: merchantAgrees(p, charge),
           };
         })
         .sort(function (a, b) {
@@ -1355,6 +1541,13 @@
           return c.amount;
         }),
         zeroAmountCount: b.zeroAmountPurchases.length,
+        // Where your POS's payment state disagrees with what the cards did.
+        posSaysUnpaidButCharged: b.matches.filter(function (m) {
+          return m.flags && m.flags.indexOf('pos-says-unpaid') !== -1;
+        }).length,
+        posSaysPaidButNoCharge: b.unmatchedPurchases.filter(function (p) {
+          return (p.paymentState || '').toLowerCase() === 'paid';
+        }).length,
         needsReviewCount: b.matches.filter(function (m) {
           return m.confidence === 'review' || m.ambiguous;
         }).length,
@@ -1446,11 +1639,13 @@
           const last4Agree = Boolean(p.last4 && c.last4 && p.last4 === c.last4);
           const last4Conflict = Boolean(p.last4 && c.last4 && p.last4 !== c.last4);
           if (last4Conflict) return; // different card: never the same transaction
+          if (merchantConflict(p, c)) return; // a SeatGeek order is not a TM charge
           if (opts.requireLast4 && !last4Agree) return;
 
           let score = -Math.abs(delta / MINUTE) * SCORE.minutePenalty;
           if (last4Agree) score += SCORE.last4Match;
           if (Math.abs(toCents(c.amount) - pCents) === 0) score += SCORE.exactAmount;
+          if (merchantAgrees(p, c)) score += SCORE.merchantMatch;
           if (c.status === 'settled') score += SCORE.settled;
           candidates.push({ purchase: p, charge: c, score: score, delta: delta });
         });
@@ -1596,6 +1791,206 @@
     }
 
     // =====================================================================
+    // 3b. Spreadsheets
+    // =====================================================================
+
+    /**
+     * Minimal .xlsx reader — enough to import a spreadsheet export, nothing more.
+     *
+     * An .xlsx is a ZIP of XML. This walks the ZIP central directory, inflates the
+     * first worksheet (and the shared string table, when the file uses one), and
+     * hands back the same `{headers, rows}` shape as the CSV parser, so everything
+     * downstream is unchanged.
+     *
+     * Decompression uses the platform's own `DecompressionStream`, which Node 18+
+     * and every current browser provide — so this file runs unmodified in the
+     * server build and in the single-file browser build.
+     *
+     * Deliberately not supported: formulas (the cached value is used), styles, and
+     * multiple sheets (the first is read). Dates stored as Excel serial numbers
+     * come through as numbers; `parseTimestamp` converts them.
+     */
+
+    const textDecoder = new TextDecoder();
+
+    /**
+     * @param {ArrayBuffer|Uint8Array} input raw .xlsx bytes
+     * @returns {Promise<{headers: string[], rows: Record<string, string>[]}>}
+     */
+    async function parseXlsx(input) {
+      const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+      const entries = readZipEntries(bytes);
+
+      const sheetNames = [...entries.keys()]
+        .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))
+        .sort();
+      if (!sheetNames.length) {
+        throw new Error('That .xlsx has no worksheets in it.');
+      }
+
+      const sheetXml = textDecoder.decode(await readEntry(bytes, entries.get(sheetNames[0])));
+      const sharedEntry = entries.get('xl/sharedStrings.xml');
+      const shared = sharedEntry ? parseSharedStrings(textDecoder.decode(await readEntry(bytes, sharedEntry))) : [];
+
+      return sheetToTable(sheetXml, shared);
+    }
+
+    /** True when these bytes start with a ZIP local file header ("PK\x03\x04"). */
+    function looksLikeXlsx(input) {
+      const b = input instanceof Uint8Array ? input : new Uint8Array(input);
+      return b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04;
+    }
+
+    // ---------------------------------------------------------------------------
+    // ZIP
+    // ---------------------------------------------------------------------------
+
+    function readZipEntries(bytes) {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+      // Find the End Of Central Directory record, scanning back from the tail.
+      let eocd = -1;
+      for (let i = bytes.length - 22; i >= 0 && i >= bytes.length - 66000; i--) {
+        if (view.getUint32(i, true) === 0x06054b50) {
+          eocd = i;
+          break;
+        }
+      }
+      if (eocd === -1) throw new Error('That file is not a readable .xlsx (no ZIP directory found).');
+
+      const count = view.getUint16(eocd + 10, true);
+      let offset = view.getUint32(eocd + 16, true);
+      const entries = new Map();
+
+      for (let i = 0; i < count; i++) {
+        if (view.getUint32(offset, true) !== 0x02014b50) break;
+        const method = view.getUint16(offset + 10, true);
+        const compressedSize = view.getUint32(offset + 20, true);
+        const nameLength = view.getUint16(offset + 28, true);
+        const extraLength = view.getUint16(offset + 30, true);
+        const commentLength = view.getUint16(offset + 32, true);
+        const localOffset = view.getUint32(offset + 42, true);
+        const name = textDecoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+
+        entries.set(name, { method, compressedSize, localOffset });
+        offset += 46 + nameLength + extraLength + commentLength;
+      }
+
+      return entries;
+    }
+
+    async function readEntry(bytes, entry) {
+      if (!entry) throw new Error('Expected part of the .xlsx is missing.');
+
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const local = entry.localOffset;
+      if (view.getUint32(local, true) !== 0x04034b50) throw new Error('The .xlsx is corrupt.');
+
+      // The local header repeats the name/extra lengths; the central directory's
+      // copies can differ, so always trust the local ones for where data starts.
+      const nameLength = view.getUint16(local + 26, true);
+      const extraLength = view.getUint16(local + 28, true);
+      const start = local + 30 + nameLength + extraLength;
+      const compressed = bytes.subarray(start, start + entry.compressedSize);
+
+      if (entry.method === 0) return compressed; // stored
+      if (entry.method !== 8) throw new Error(`Unsupported compression in the .xlsx (method ${entry.method}).`);
+
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Sheet XML
+    // ---------------------------------------------------------------------------
+
+    /** Strip a namespace prefix so `<x:row>` and `<row>` are handled alike. */
+    const TAG = (name) => new RegExp(`<(?:\\w+:)?${name}\\b[^>]*?(/>|>)`, 'g');
+
+    function parseSharedStrings(xml) {
+      const out = [];
+      const siBlocks = xml.split(/<(?:\w+:)?si\b[^>]*>/).slice(1);
+      for (const block of siBlocks) {
+        const end = block.search(/<\/(?:\w+:)?si>/);
+        const body = end === -1 ? block : block.slice(0, end);
+        // A shared string can be split across several <t> runs.
+        const parts = [...body.matchAll(/<(?:\w+:)?t\b[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g)].map((m) => decodeXml(m[1]));
+        out.push(parts.join(''));
+      }
+      return out;
+    }
+
+    function sheetToTable(xml, shared) {
+      const rows = [];
+      const rowChunks = xml.split(/<(?:\w+:)?row\b[^>]*>/).slice(1);
+
+      for (const chunk of rowChunks) {
+        const end = chunk.search(/<\/(?:\w+:)?row>/);
+        const body = end === -1 ? chunk : chunk.slice(0, end);
+        const cells = [];
+
+        const cellRe = /<(?:\w+:)?c\b([^>]*)(?:\/>|>([\s\S]*?)<\/(?:\w+:)?c>)/g;
+        let match;
+        while ((match = cellRe.exec(body)) !== null) {
+          const attrs = match[1] || '';
+          const inner = match[2] || '';
+          const ref = (attrs.match(/r="([A-Z]+)\d+"/) || [])[1];
+          const type = (attrs.match(/t="([^"]+)"/) || [])[1] || 'n';
+          const index = ref ? columnIndex(ref) : cells.length;
+
+          let value = '';
+          if (type === 'inlineStr') {
+            const parts = [...inner.matchAll(/<(?:\w+:)?t\b[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g)].map((m) => decodeXml(m[1]));
+            value = parts.join('');
+          } else {
+            const v = inner.match(/<(?:\w+:)?v\b[^>]*>([\s\S]*?)<\/(?:\w+:)?v>/);
+            value = v ? decodeXml(v[1]) : '';
+            if (type === 's') value = shared[Number(value)] ?? '';
+          }
+
+          // Cells for empty columns are simply absent; pad so columns stay aligned.
+          while (cells.length < index) cells.push('');
+          cells[index] = value;
+        }
+
+        rows.push(cells);
+      }
+
+      if (!rows.length) return { headers: [], rows: [] };
+
+      const headers = rows[0].map((h) => String(h ?? '').trim());
+      const out = [];
+      for (let i = 1; i < rows.length; i++) {
+        const cells = rows[i];
+        if (!cells.length || cells.every((c) => String(c ?? '').trim() === '')) continue;
+        const row = {};
+        for (let c = 0; c < headers.length; c++) row[headers[c]] = cells[c] === undefined ? '' : String(cells[c]);
+        out.push(row);
+      }
+
+      return { headers, rows: out };
+    }
+
+    /** "AB" → 27 (zero-based column index). */
+    function columnIndex(letters) {
+      let n = 0;
+      for (let i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+      return n - 1;
+    }
+
+    function decodeXml(text) {
+      return String(text)
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
+        .replace(/&amp;/g, '&');
+    }
+
+
+    // =====================================================================
     // 4. State — kept in this browser only
     // =====================================================================
 
@@ -1684,6 +2079,29 @@
     // 6. Ledger sections
     // =====================================================================
 
+    /** What to call a purchase: the event when there is one, else the PO. */
+    function purchaseTitle(p) {
+      return p.label || p.event || (p.poId ? 'PO ' + p.poId : 'Purchase ' + p.id);
+    }
+
+    /** Second line: venue and seats, or the vendor it was bought from. */
+    function purchaseDetail(p) {
+      const parts = [];
+      if (p.venue) parts.push(p.venue);
+      if (p.seats) parts.push(p.seats);
+      if (!parts.length && p.vendor) parts.push(p.vendor);
+      if (!parts.length && p.qty) parts.push(p.qty + ' tickets');
+      return parts.join(' · ');
+    }
+
+    /** A payment state worth arguing with. */
+    function posStamp(p) {
+      const state = (p.paymentState || '').toLowerCase();
+      if (!state) return '';
+      const tone = state === 'paid' ? 'plain' : 'review';
+      return '<span class="stamp ' + tone + '">POS: ' + esc(p.paymentState) + '</span>';
+    }
+
     function stampFor(match) {
       const flag = match.ambiguous
         ? ' <span class="stamp ambiguous" title="More than one charge fit equally well">ambiguous</span>'
@@ -1705,10 +2123,11 @@
             label: 'Purchase',
             sort: function (m) { return m.purchase.event; },
             render: function (m) {
+              const flag = m.flags && m.flags.length ? ' <span class="stamp review">POS says unpaid</span>' : '';
               return (
-                '<div class="lead">' + esc(m.purchase.event || '(no event)') + '</div>' +
-                '<div class="sub">' + esc(m.purchase.venue || '') + (m.purchase.seats ? ' · ' + esc(m.purchase.seats) : '') + '</div>' +
-                '<div class="sub">' + esc(m.purchase.account || '') + '</div>'
+                '<div class="lead">' + esc(purchaseTitle(m.purchase)) + '</div>' +
+                '<div class="sub">' + esc(purchaseDetail(m.purchase)) + '</div>' +
+                '<div class="sub">' + esc(m.purchase.account || '') + flag + '</div>'
               );
             },
           },
@@ -1776,7 +2195,7 @@
           },
         ],
         search: function (m) {
-          return [m.purchase.event, m.purchase.account, m.purchase.venue, m.purchase.poId, m.purchase.id,
+          return [m.purchase.event, m.purchase.label, m.purchase.vendor, m.purchase.account, m.purchase.venue, m.purchase.poId, m.purchase.id,
             m.charge.description, m.charge.cardName, m.charge.last4, m.charge.id, m.purchase.amount];
         },
         emptyTitle: 'No matches yet',
@@ -1793,8 +2212,8 @@
             sort: function (p) { return p.event; },
             render: function (p) {
               return (
-                '<div class="lead">' + esc(p.event || '(no event)') + '</div>' +
-                '<div class="sub">' + esc(p.venue || '') + (p.seats ? ' · ' + esc(p.seats) : '') + '</div>' +
+                '<div class="lead">' + esc(purchaseTitle(p)) + '</div>' +
+                '<div class="sub">' + esc(purchaseDetail(p)) + '</div>' +
                 '<div class="sub">' + esc(p.account || '') + '</div>'
               );
             },
@@ -1807,7 +2226,7 @@
             render: function (p) {
               return p.last4
                 ? '<span class="stamp plain">••' + esc(p.last4) + '</span>'
-                : '<span class="stamp plain">no card on file</span>';
+                : '<span class="stamp plain">no card on file</span> ' + posStamp(p);
             },
           },
           { key: 'amount', label: 'Amount', num: true, sort: function (p) { return p.amount; }, render: function (p) { return fmtMoney(p.amount); } },
@@ -1824,7 +2243,9 @@
             },
           },
         ],
-        search: function (p) { return [p.event, p.account, p.venue, p.poId, p.id, p.last4, p.amount, p.reason]; },
+        search: function (p) {
+          return [p.event, p.label, p.vendor, p.paymentState, p.account, p.venue, p.poId, p.id, p.last4, p.amount, p.reason];
+        },
         emptyTitle: 'Every purchase has a charge',
         emptyHint: 'Nothing is out of balance on this side.',
       },
@@ -1934,7 +2355,7 @@
             sort: function (p) { return p.event; },
             render: function (p) {
               return (
-                '<div class="lead">' + esc(p.event || '(no event)') + '</div>' +
+                '<div class="lead">' + esc(purchaseTitle(p)) + '</div>' +
                 '<div class="sub">' + esc(p.account || '') + (p.tags ? ' · ' + esc(p.tags) : '') + '</div>'
               );
             },
@@ -1996,6 +2417,84 @@
       });
     }
 
+    /**
+     * Are both feeds covering the same days? Export a week of purchases against
+     * one day of card activity and six days of orders look unpaid when they are
+     * simply outside the file. Naming the gap keeps it from reading as loss.
+     */
+    function assessCoverage(days, scopedDay, purchases, charges) {
+      const relevant = scopedDay === 'all' ? days : days.filter(function (d) {
+        return d.day === scopedDay;
+      });
+
+      // Whole missing days are obvious. The subtler case is two exports that
+      // share a day but stop at different times — the afternoon's orders then
+      // look unpaid when they are simply not in the card file yet.
+      const range = function (rows, key) {
+        const stamps = rows
+          .map(function (r) {
+            return r[key];
+          })
+          .filter(function (t) {
+            return typeof t === 'number' && !isNaN(t);
+          });
+        return stamps.length ? { from: Math.min.apply(null, stamps), to: Math.max.apply(null, stamps) } : null;
+      };
+
+      const purchaseRange = range(purchases, 'purchasedAt');
+      const chargeRange = range(charges, 'occurredAt');
+      // Judge the mismatch by how many rows fall outside, not by the extremes:
+      // one stray refund from last night is not a coverage problem, forty
+      // orders the card export never reached certainly is.
+      let misaligned = null;
+      if (purchaseRange && chargeRange) {
+        const SLACK = 60 * 60 * 1000; // the two feeds legitimately lag
+        const outside = function (rows, key, range) {
+          return rows.filter(function (r) {
+            return typeof r[key] === 'number' && (r[key] < range.from - SLACK || r[key] > range.to + SLACK);
+          }).length;
+        };
+        const purchasesOutside = outside(purchases, 'purchasedAt', chargeRange);
+        const chargesOutside = outside(charges, 'occurredAt', purchaseRange);
+        const material = function (count, total) {
+          return count >= 2 && count / total > 0.1;
+        };
+        if (material(purchasesOutside, purchases.length) || material(chargesOutside, charges.length)) {
+          misaligned = {
+            purchasesOutside: purchasesOutside,
+            chargesOutside: chargesOutside,
+            purchaseCount: purchases.length,
+            chargeCount: charges.length,
+          };
+        }
+      }
+
+      // A day only counts as "missing" when the side that *is* there amounts to
+      // something — one settlement authorized last night should not report the
+      // whole of yesterday as uncovered.
+      const material = function (count, total) {
+        return count >= 3 || (total > 0 && count / total > 0.1);
+      };
+      const totalPurchases = purchases.length;
+      const totalCharges = charges.length;
+
+      return {
+        purchaseRange: purchaseRange,
+        chargeRange: chargeRange,
+        misalignedWindows: misaligned,
+        daysMissingCharges: relevant.filter(function (d) {
+          return d.charges === 0 && material(d.purchases, totalPurchases);
+        }).map(function (d) {
+          return d.day;
+        }),
+        daysMissingPurchases: relevant.filter(function (d) {
+          return d.purchases === 0 && material(d.charges, totalCharges);
+        }).map(function (d) {
+          return d.day;
+        }),
+      };
+    }
+
     function recompute() {
       const full = reconcile({
         purchases: purchaseList(),
@@ -2008,6 +2507,7 @@
         state.day = 'all';
       }
       state.report = state.day === 'all' ? full : scopeToDay(full, state.day);
+      state.coverage = assessCoverage(state.days, state.day, purchaseList(), chargeList());
     }
 
     function figure(cap, amount, foot, flag) {
@@ -2059,7 +2559,60 @@
           t.netExposure === 0 ? 'ok' : 'bad',
         ) +
         figure('Needs review', String(t.needsReviewCount), 'matches with a caveat', t.needsReviewCount ? 'warn' : 'ok') +
-        figure('Declines', String(t.declineCount), fmtMoney(t.declineTotal) + ' attempted', t.declineCount ? 'warn' : 'ok');
+        figure('Declines', String(t.declineCount), fmtMoney(t.declineTotal) + ' attempted', t.declineCount ? 'warn' : 'ok') +
+        (t.posSaysUnpaidButCharged || t.posSaysPaidButNoCharge
+          ? figure(
+              'POS disagrees',
+              String(t.posSaysUnpaidButCharged + t.posSaysPaidButNoCharge),
+              t.posSaysUnpaidButCharged + ' charged but marked unpaid · ' + t.posSaysPaidButNoCharge + ' marked paid, no charge',
+              'warn',
+            )
+          : '');
+    }
+
+    function renderCoverage() {
+      const el = $('#coverage');
+      const c = state.coverage || {};
+      const list = function (days) {
+        return days.length > 3 ? days.slice(0, 3).join(', ') + ' and ' + (days.length - 3) + ' more' : days.join(', ');
+      };
+
+      const gaps = [];
+      if (c.daysMissingCharges && c.daysMissingCharges.length) {
+        gaps.push(
+          'No card transactions imported for ' + list(c.daysMissingCharges) +
+            ' — purchases on those days cannot match anything yet.',
+        );
+      }
+      if (c.daysMissingPurchases && c.daysMissingPurchases.length) {
+        gaps.push(
+          'No purchases imported for ' + list(c.daysMissingPurchases) +
+            ' — charges on those days cannot match anything yet.',
+        );
+      }
+
+      if (c.misalignedWindows && c.purchaseRange && c.chargeRange) {
+        const span = function (r) {
+          return fmtTime(r.from) + ' → ' + fmtTime(r.to);
+        };
+        const w = c.misalignedWindows;
+        const bits = [];
+        if (w.purchasesOutside) bits.push(w.purchasesOutside + ' of ' + w.purchaseCount + ' purchases');
+        if (w.chargesOutside) bits.push(w.chargesOutside + ' of ' + w.chargeCount + ' charges');
+        gaps.push(
+          'The two exports cover different windows — purchases ' + span(c.purchaseRange) + ', card transactions ' +
+            span(c.chargeRange) + '. ' + bits.join(' and ') +
+            ' fall outside the other file entirely and cannot match anything. Export the same window on both sides ' +
+            'to compare like with like.',
+        );
+      }
+
+      el.hidden = gaps.length === 0;
+      el.innerHTML = gaps
+        .map(function (g) {
+          return '<div>' + esc(g) + '</div>';
+        })
+        .join('');
     }
 
     function renderSections() {
@@ -2182,6 +2735,7 @@
       renderChrome();
       if (purchaseList().length || chargeList().length) {
         renderFigures();
+        renderCoverage();
         renderSections();
         renderLedger();
       }
@@ -2191,51 +2745,87 @@
     // 8. Import / export
     // =====================================================================
 
-    function importText(filename, text) {
-      const parsed = parseCsv(text);
-      if (!parsed.headers.length) throw new Error(filename + ' is empty.');
-      const result = normalizeParsed(parsed);
+    function mergeRecords(result) {
       const bucket = result.kind === 'purchases' ? state.purchases : state.charges;
       let added = 0;
       let updated = 0;
+      let replaced = 0;
+
+      // The same purchase order appears in both purchase exports under
+      // different row ids, so an incoming record evicts the same PO from the
+      // *other* export rather than letting the money be counted twice.
+      const incoming = new Map();
+      result.records.forEach(function (r) {
+        if (r.poId) incoming.set(r.poId, r.source);
+      });
+      if (incoming.size) {
+        Object.keys(bucket).forEach(function (key) {
+          const existing = bucket[key];
+          const source = incoming.get(existing.poId);
+          if (source && existing.source && existing.source !== source) {
+            delete bucket[key];
+            replaced += 1;
+          }
+        });
+      }
+
       result.records.forEach(function (record) {
         if (bucket[record.id]) updated += 1;
         else added += 1;
         bucket[record.id] = record;
       });
-      return { kind: result.kind, rows: result.records.length, added: added, updated: updated };
+
+      return {
+        kind: result.kind,
+        format: result.format,
+        rows: result.records.length,
+        added: added,
+        updated: updated,
+        replaced: replaced,
+      };
     }
 
-    function importFiles(fileList) {
+    function importText(filename, text) {
+      const parsed = parseCsv(text);
+      if (!parsed.headers.length) throw new Error(filename + ' is empty.');
+      return mergeRecords(normalizeParsed(parsed));
+    }
+
+    async function importBytes(filename, bytes) {
+      const parsed = await parseXlsx(bytes);
+      if (!parsed.headers.length) throw new Error(filename + ' has no rows in it.');
+      return mergeRecords(normalizeParsed(parsed));
+    }
+
+    async function importFiles(fileList) {
       const files = Array.prototype.slice.call(fileList).filter(function (f) {
-        return /\.csv$/i.test(f.name) || f.type === 'text/csv';
+        return /\.(csv|xlsx)$/i.test(f.name) || f.type === 'text/csv';
       });
       if (!files.length) {
-        toast('Only .csv files can be imported.', 'bad');
+        toast('Only .csv and .xlsx files can be imported.', 'bad');
         return;
       }
-      Promise.all(
-        files.map(function (f) {
-          return f.text().then(function (text) {
-            return { name: f.name, text: text };
-          });
-        }),
-      ).then(function (loaded) {
-        loaded.forEach(function (file) {
-          try {
-            const r = importText(file.name, file.text);
-            toast(
-              file.name + ': ' + r.rows + ' ' + (r.kind === 'purchases' ? 'purchases' : 'transactions') +
-                ' (' + r.added + ' new, ' + r.updated + ' updated)',
-              'ok',
-            );
-          } catch (err) {
-            toast(file.name + ': ' + err.message, 'bad');
-          }
-        });
-        save();
-        render();
-      });
+
+      for (const file of files) {
+        try {
+          const isSheet = /\.xlsx$/i.test(file.name);
+          const r = isSheet
+            ? await importBytes(file.name, new Uint8Array(await file.arrayBuffer()))
+            : importText(file.name, await file.text());
+
+          const what = r.kind === 'purchases' ? 'purchases' : 'transactions';
+          const replaced = r.replaced ? ', ' + r.replaced + ' replaced from the other export' : '';
+          toast(
+            file.name + ': ' + r.rows + ' ' + what + ' (' + r.added + ' new, ' + r.updated + ' updated' + replaced + ')',
+            'ok',
+          );
+        } catch (err) {
+          toast(file.name + ': ' + err.message, 'bad');
+        }
+      }
+
+      save();
+      render();
     }
 
     function reportToCsv(report) {
@@ -2349,7 +2939,8 @@
       openModal(
         'Matched transaction',
         '<div class="facts">' +
-          fact('Event', m.purchase.event) + fact('Venue', m.purchase.venue) + fact('Seats', m.purchase.seats) +
+          fact('Purchase', purchaseTitle(m.purchase)) + fact('Venue', m.purchase.venue) + fact('Seats', m.purchase.seats) +
+          fact('Vendor', m.purchase.vendor) + fact('POS payment state', m.purchase.paymentState) +
           fact('Qty', m.purchase.qty) + fact('Account', m.purchase.account) + fact('PO id', m.purchase.poId) +
           fact('Purchase id', m.purchase.id) + fact('Purchased', fmtTime(m.purchase.purchasedAt)) +
           fact('Purchase amount', fmtMoney(m.purchase.amount)) +
@@ -2401,7 +2992,8 @@
       openModal(
         'Link this purchase to a charge',
         '<div class="facts">' +
-          fact('Event', p.event) + fact('Account', p.account) + fact('Purchased', fmtTime(p.purchasedAt)) +
+          fact('Purchase', purchaseTitle(p)) + fact('Account', p.account) + fact('Purchased', fmtTime(p.purchasedAt)) +
+          fact('Vendor', p.vendor) + fact('POS payment state', p.paymentState) +
           fact('Amount', fmtMoney(p.amount)) + fact('Card', p.last4 ? '••' + p.last4 : 'not recorded') + fact('PO id', p.poId) +
         '</div>' +
           candidateTable(
@@ -2421,7 +3013,8 @@
       const body = c.candidates
         .map(function (p) {
           return (
-            '<tr><td><div class="lead">' + esc(p.event) + '</div><div class="sub">' + esc(p.account || '') + '</div></td>' +
+            '<tr><td><div class="lead">' + esc(p.label || p.event || 'PO ' + p.poId) + '</div><div class="sub">' +
+              esc([p.vendor, p.account].filter(Boolean).join(' · ')) + '</div></td>' +
             '<td class="mono">' + fmtTime(p.purchasedAt) + '</td>' +
             '<td class="mono">' + (p.last4 ? '••' + esc(p.last4) : '—') + (p.last4Agree ? ' <span class="stamp exact">same card</span>' : '') + '</td>' +
             '<td class="num">' + fmtMoney(p.amount) + '</td>' +

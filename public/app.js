@@ -63,9 +63,9 @@ const TABS = [
         label: 'Purchase',
         sort: (m) => m.purchase.event,
         render: (m) => `
-          <div class="primary-cell">${esc(m.purchase.event || '(no event)')}</div>
-          <div class="sub-cell">${esc(m.purchase.venue || '')}${m.purchase.seats ? ` · ${esc(m.purchase.seats)}` : ''}</div>
-          <div class="sub-cell">${esc(m.purchase.account || '')}</div>`,
+          <div class="primary-cell">${esc(purchaseTitle(m.purchase))}</div>
+          <div class="sub-cell">${esc(purchaseDetail(m.purchase))}</div>
+          <div class="sub-cell">${esc(m.purchase.account || '')} ${posStamp(m)}</div>`,
       },
       {
         key: 'ptime',
@@ -110,7 +110,7 @@ const TABS = [
       },
     ],
     search: (m) =>
-      [m.purchase.event, m.purchase.account, m.purchase.venue, m.purchase.poId, m.purchase.id,
+      [m.purchase.event, m.purchase.label, m.purchase.vendor, m.purchase.account, m.purchase.venue, m.purchase.poId, m.purchase.id,
        m.charge.description, m.charge.cardName, m.charge.last4, m.charge.id, m.purchase.amount],
   },
   {
@@ -124,8 +124,8 @@ const TABS = [
         label: 'Purchase',
         sort: (p) => p.event,
         render: (p) => `
-          <div class="primary-cell">${esc(p.event || '(no event)')}</div>
-          <div class="sub-cell">${esc(p.venue || '')}${p.seats ? ` · ${esc(p.seats)}` : ''}</div>
+          <div class="primary-cell">${esc(purchaseTitle(p))}</div>
+          <div class="sub-cell">${esc(purchaseDetail(p))}</div>
           <div class="sub-cell">${esc(p.account || '')}</div>`,
       },
       { key: 'time', label: 'Purchased', sort: (p) => p.purchasedAt ?? 0, render: (p) => `<div class="mono">${fmtTime(p.purchasedAt)}</div>` },
@@ -133,7 +133,10 @@ const TABS = [
         key: 'card',
         label: 'Card',
         sort: (p) => p.last4,
-        render: (p) => (p.last4 ? `<span class="mono">••${esc(p.last4)}</span> <span class="sub-cell">${esc(p.brand || '')}</span>` : '<span class="pill muted">no card on file</span>'),
+        render: (p) =>
+          p.last4
+            ? `<span class="mono">••${esc(p.last4)}</span> <span class="sub-cell">${esc(p.brand || '')}</span>`
+            : `<span class="pill muted">no card on file</span>${p.paymentState ? ` <span class="pill ${p.paymentState.toLowerCase() === 'paid' ? 'review' : 'muted'}">POS: ${esc(p.paymentState)}</span>` : ''}`,
       },
       { key: 'amount', label: 'Amount', num: true, sort: (p) => p.amount, render: (p) => fmtMoney(p.amount) },
       { key: 'reason', label: 'Why unmatched', sort: (p) => p.reason, render: (p) => `<div class="reason">${esc(p.reason)}</div>` },
@@ -146,7 +149,7 @@ const TABS = [
           <button class="btn tiny ghost" data-act="ignore" data-kind="purchase" data-id="${esc(p.id)}">Ignore</button>`,
       },
     ],
-    search: (p) => [p.event, p.account, p.venue, p.poId, p.id, p.last4, p.amount, p.reason],
+    search: (p) => [p.event, p.label, p.vendor, p.paymentState, p.account, p.venue, p.poId, p.id, p.last4, p.amount, p.reason],
   },
   {
     id: 'charges',
@@ -237,6 +240,28 @@ const TABS = [
 ];
 
 const tabById = (id) => TABS.find((t) => t.id === id) ?? TABS[0];
+
+/** What to call a purchase: the event when we have one, else the PO. */
+function purchaseTitle(p) {
+  return p.label || p.event || (p.poId ? `PO ${p.poId}` : `Purchase ${p.id}`);
+}
+
+/** Second line: venue and seats, or the vendor the order was bought from. */
+function purchaseDetail(p) {
+  const parts = [];
+  if (p.venue) parts.push(p.venue);
+  if (p.seats) parts.push(p.seats);
+  if (!parts.length && p.vendor) parts.push(p.vendor);
+  if (!parts.length && p.qty) parts.push(`${p.qty} tickets`);
+  return parts.join(' · ');
+}
+
+/** Flag a match your POS still thinks is unpaid. */
+function posStamp(m) {
+  if (m.flags?.includes('pos-says-unpaid')) return '<span class="pill review">POS says unpaid</span>';
+  if (m.flags?.includes('pos-says-refund-needed')) return '<span class="pill review">POS: refund needed</span>';
+  return '';
+}
 
 function renderConfidence(m) {
   const cls = { exact: 'exact', likely: 'likely', review: 'review', manual: 'manual' }[m.confidence] ?? 'muted';
@@ -408,6 +433,46 @@ function renderDays(r) {
   select.innerHTML = options.join('');
 }
 
+/**
+ * Warn when the two feeds do not cover the same days. Without this, exporting a
+ * week of purchases against one day of card activity reads as a week of unpaid
+ * orders — a reporting gap that looks exactly like missing money.
+ */
+function renderCoverage(r) {
+  const el = document.getElementById('coverage');
+  if (!el) return;
+  const gaps = [];
+  const list = (days) => (days.length > 3 ? `${days.slice(0, 3).join(', ')} and ${days.length - 3} more` : days.join(', '));
+
+  if (r.coverage?.daysMissingCharges?.length) {
+    gaps.push(
+      `No card transactions imported for ${list(r.coverage.daysMissingCharges)} — purchases on those days cannot match anything yet.`,
+    );
+  }
+  if (r.coverage?.daysMissingPurchases?.length) {
+    gaps.push(
+      `No purchases imported for ${list(r.coverage.daysMissingPurchases)} — charges on those days cannot match anything yet.`,
+    );
+  }
+
+  const win = r.coverage?.misalignedWindows;
+  if (win && r.coverage.purchaseRange && r.coverage.chargeRange) {
+    const span = (range) => `${fmtTime(range.from)} → ${fmtTime(range.to)}`;
+    const bits = [];
+    if (win.purchasesOutside) bits.push(`${win.purchasesOutside} of ${win.purchaseCount} purchases`);
+    if (win.chargesOutside) bits.push(`${win.chargesOutside} of ${win.chargeCount} charges`);
+    gaps.push(
+      `The two exports cover different windows — purchases ${span(r.coverage.purchaseRange)}, ` +
+        `card transactions ${span(r.coverage.chargeRange)}. ` +
+        `${bits.join(' and ')} fall outside the other file entirely and cannot match anything. ` +
+        `Export the same window on both sides to compare like with like.`,
+    );
+  }
+
+  el.hidden = gaps.length === 0;
+  el.innerHTML = gaps.map((g) => `<div>${esc(g)}</div>`).join('');
+}
+
 function renderSubtitle(r) {
   const when = new Date(r.generatedAt).toLocaleTimeString();
   const scope = r.day === 'all' ? 'all days' : r.day;
@@ -426,6 +491,7 @@ function renderSettings(r) {
 function render() {
   if (!state.report) return;
   renderKpis(state.report);
+  renderCoverage(state.report);
   renderTabs(state.report);
   renderDays(state.report);
   renderSubtitle(state.report);
@@ -463,13 +529,25 @@ async function post(path, body) {
 }
 
 async function uploadFiles(fileList) {
-  const files = [...fileList].filter((f) => /\.csv$/i.test(f.name) || f.type === 'text/csv');
+  const files = [...fileList].filter(
+    (f) => /\.(csv|xlsx)$/i.test(f.name) || f.type === 'text/csv',
+  );
   if (files.length === 0) {
-    toast('Only .csv files can be imported.', 'error');
+    toast('Only .csv and .xlsx files can be imported.', 'error');
     return;
   }
   const payload = await Promise.all(
-    files.map(async (f) => ({ filename: f.name, text: await f.text() })),
+    files.map(async (f) => {
+      // Spreadsheets go over as bytes; CSVs stay text so the payload is readable.
+      if (/\.xlsx$/i.test(f.name)) {
+        const buffer = await f.arrayBuffer();
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        return { filename: f.name, base64: btoa(binary) };
+      }
+      return { filename: f.name, text: await f.text() };
+    }),
   );
   try {
     const result = await post('/api/import', { files: payload });
