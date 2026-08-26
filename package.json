@@ -1,0 +1,15 @@
+{
+  "name": "ticket-reconciler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Daily live dashboard that reconciles ticket purchases against credit card transactions",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

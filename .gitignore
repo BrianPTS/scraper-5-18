@@ -1,0 +1,10 @@
+# Imported data never belongs in git — it contains card and account details.
+data/
+inbox/*
+!inbox/README.md
+
+node_modules/
+*.log
+.DS_Store
+*.tmp
+*.corrupt-*

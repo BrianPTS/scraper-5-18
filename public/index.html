@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ticket Reconciler</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧾</text></svg>" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="drop-overlay" class="drop-overlay" hidden>
+      <div>
+        <strong>Drop CSV exports</strong>
+        <span>Purchase orders and card transactions are detected automatically</span>
+      </div>
+    </div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">🧾</span>
+        <div>
+          <h1>Ticket Reconciler</h1>
+          <p id="subtitle">Loading…</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <label class="field">
+          <span>Day</span>
+          <select id="day-select"></select>
+        </label>
+        <button id="import-btn" class="btn primary">Import CSV</button>
+        <a id="export-btn" class="btn" href="/api/export">Export</a>
+        <button id="settings-btn" class="btn ghost" title="Matching rules">⚙</button>
+        <span id="live" class="live" title="Live connection"><i></i>live</span>
+      </div>
+      <input id="file-input" type="file" accept=".csv,text/csv" multiple hidden />
+    </header>
+
+    <section class="kpis" id="kpis"></section>
+
+    <section class="panel" id="settings-panel" hidden>
+      <h2>Matching rules</h2>
+      <p class="hint">
+        A purchase and a charge are paired when the amounts agree, the timestamps fall inside the
+        window, and the card's last four digits do not contradict each other.
+      </p>
+      <div class="settings-grid">
+        <label class="field">
+          <span>Amount tolerance ($)</span>
+          <input id="opt-amountTolerance" type="number" step="0.01" min="0" />
+        </label>
+        <label class="field">
+          <span>Time window (minutes)</span>
+          <input id="opt-timeWindowMinutes" type="number" step="5" min="1" />
+        </label>
+        <label class="field">
+          <span>Charge clock offset (minutes)</span>
+          <input id="opt-chargeTimeOffsetMinutes" type="number" step="15" />
+        </label>
+        <label class="field checkbox">
+          <input id="opt-requireLast4" type="checkbox" />
+          <span>Require last-4 match</span>
+        </label>
+      </div>
+      <div class="settings-actions">
+        <button id="settings-save" class="btn primary">Apply</button>
+        <button id="settings-close" class="btn ghost">Close</button>
+        <button id="reset-btn" class="btn danger">Clear all data</button>
+      </div>
+    </section>
+
+    <nav class="tabs" id="tabs"></nav>
+
+    <section class="toolbar">
+      <input id="search" type="search" placeholder="Filter by event, card, account, amount, id…" />
+      <span id="row-count" class="row-count"></span>
+    </section>
+
+    <main id="view" class="view"></main>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-card">
+        <header>
+          <h2 id="modal-title">Link</h2>
+          <button id="modal-close" class="btn ghost">✕</button>
+        </header>
+        <div id="modal-body"></div>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts"></div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
