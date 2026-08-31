@@ -48,8 +48,17 @@ own history.)
 
 1. Go to [vercel.com/new](https://vercel.com/new) and import that repository.
 2. Leave every build setting alone. There is no build step — Vercel serves
-   `public/` as static files and runs `api/index.js` as a function.
+   `public/` as static files and runs `api/index.js` as a function. `vercel.json`
+   pins that arrangement, so whatever the import screen guesses does not matter.
 3. Click **Deploy**.
+
+> **Do not remove `"framework": null` and `"outputDirectory"` from
+> `vercel.json`.** Left to guess, Vercel sees `server.js` and an npm `start`
+> script, concludes this is a long-running Node server, and deploys *that*
+> instead — ignoring `api/` entirely. `server.js` is the local build: it keeps
+> its data in a `data/` folder it creates on disk, which a serverless function
+> cannot do, so every request dies with `ENOENT` before reaching any of our
+> code. Those two lines say "there is no server to detect."
 
 It will finish in under a minute and give you a URL like
 `ticket-reconciler.vercel.app`. **Opening it now will say the deployment is not

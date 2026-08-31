@@ -23,6 +23,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CONFIG_PATH = fileURLToPath(new URL('../deployment.json', import.meta.url));
@@ -31,19 +32,37 @@ const CONFIG_PATH = fileURLToPath(new URL('../deployment.json', import.meta.url)
 // itself would delete the real deployment's secrets.
 const SECRETS_PATH = process.env.SECRETS_FILE || fileURLToPath(new URL('../secrets.json', import.meta.url));
 
-/** Read a JSON file, treating anything unreadable as absent. */
-function readJsonFile(path) {
-  try {
-    if (!existsSync(path)) return {};
-    return JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return {};
+/** Read the first of these JSON files that exists, treating unreadable as absent. */
+function readJsonFile(candidates) {
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate)) continue;
+      return JSON.parse(readFileSync(candidate, 'utf8'));
+    } catch {
+      // Unreadable or malformed: keep looking, then give up quietly.
+    }
   }
+  return {};
 }
 
-/** Read the committed deployment declaration, if there is one. */
-export function readDeploymentFile(path = CONFIG_PATH) {
-  return readJsonFile(path);
+/**
+ * Where to look when nobody named a file.
+ *
+ * Normally one directory up from this module — but a serverless build does not
+ * promise to leave this module where the repository put it; it may bundle,
+ * move, or flatten it, and then that relative path points nowhere. So the
+ * working directory is tried too. Failing to find these files is not a loud
+ * error, it is a quiet one: the app would conclude no password is configured
+ * and refuse to serve, looking for all the world like a deployment nobody
+ * finished setting up.
+ *
+ * An explicitly named path gets no such fallback. When a test says "read this
+ * file", a missing file has to mean absent, or the test would silently pick up
+ * the real deployment's secrets from the project root instead.
+ */
+export function readDeploymentFile(path) {
+  if (path) return readJsonFile([path]);
+  return readJsonFile([CONFIG_PATH, resolve(process.cwd(), 'deployment.json')]);
 }
 
 /**
@@ -51,8 +70,9 @@ export function readDeploymentFile(path = CONFIG_PATH) {
  * password hash and session secret for `password` mode; absent everywhere
  * except a real deployment.
  */
-export function readSecretsFile(path = SECRETS_PATH) {
-  return readJsonFile(path);
+export function readSecretsFile(path) {
+  if (path || process.env.SECRETS_FILE) return readJsonFile([path || SECRETS_PATH]);
+  return readJsonFile([SECRETS_PATH, resolve(process.cwd(), 'secrets.json')]);
 }
 
 /**
