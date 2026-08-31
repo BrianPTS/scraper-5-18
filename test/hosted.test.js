@@ -27,6 +27,7 @@ import {
   readSessionToken,
   signInPage,
 } from '../src/auth.js';
+import { readDeploymentConfig, readDeploymentFile, setupPage } from '../src/deployment.js';
 
 const SAMPLES = join(fileURLToPath(new URL('..', import.meta.url)), 'samples');
 const DB = process.env.TEST_DATABASE_URL;
@@ -175,6 +176,80 @@ test('a JWT payload is read without trusting it', () => {
   const token = `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
   assert.deepEqual(decodeJwtPayload(token), payload);
   assert.equal(decodeJwtPayload('nonsense'), null);
+});
+
+// ---------------------------------------------------------------------------
+// Is the deployment finished, and what is guarding it?
+// ---------------------------------------------------------------------------
+
+describe('deployment readiness', () => {
+  test('a bare deployment refuses to serve, and says why', () => {
+    const config = readDeploymentConfig({}, {});
+    assert.equal(config.ready, false);
+    assert.equal(config.blocker, 'auth', 'with nothing configured, the door is the first problem');
+  });
+
+  test('sign-in configured but no database is still not ready', () => {
+    const config = readDeploymentConfig({ GOOGLE_CLIENT_ID: 'a', GOOGLE_CLIENT_SECRET: 'b' }, {});
+    assert.equal(config.ready, false);
+    assert.equal(config.blocker, 'database');
+  });
+
+  test('both present is ready', () => {
+    const config = readDeploymentConfig(
+      { GOOGLE_CLIENT_ID: 'a', GOOGLE_CLIENT_SECRET: 'b', DATABASE_URL: 'postgres://x' },
+      {},
+    );
+    assert.equal(config.ready, true);
+    assert.equal(config.accessMode, 'google');
+  });
+
+  test('gateway mode needs a database but no credentials', () => {
+    // Vercel's own password protection turns people away before the app runs,
+    // so there is nothing for the app to check — but it still needs somewhere
+    // to keep the data.
+    assert.equal(readDeploymentConfig({}, { accessMode: 'gateway' }).blocker, 'database');
+    const ready = readDeploymentConfig({ DATABASE_URL: 'postgres://x' }, { accessMode: 'gateway' });
+    assert.equal(ready.ready, true);
+    assert.equal(ready.accessMode, 'gateway');
+  });
+
+  test('gateway mode cannot be reached by accident', () => {
+    // Anything other than the exact declaration leaves the app doing its own
+    // checking, which fails closed rather than open.
+    for (const file of [{}, { accessMode: '' }, { accessMode: 'none' }, { accessMode: 'open' }, { accessMode: true }]) {
+      assert.equal(readDeploymentConfig({ DATABASE_URL: 'x' }, file).accessMode, 'google');
+      assert.equal(readDeploymentConfig({ DATABASE_URL: 'x' }, file).ready, false);
+    }
+  });
+
+  test('real Google credentials override a gateway declaration', () => {
+    const config = readDeploymentConfig(
+      { GOOGLE_CLIENT_ID: 'a', GOOGLE_CLIENT_SECRET: 'b', DATABASE_URL: 'x' },
+      { accessMode: 'gateway' },
+    );
+    assert.equal(config.accessMode, 'google', 'the stronger check wins');
+  });
+
+  test('the setup page tells you which button to press', () => {
+    const page = setupPage({ blocker: 'database' });
+    assert.match(page, /Storage/);
+    assert.match(page, /Create Database/);
+    assert.match(page, /Neon/);
+    assert.ok(!page.includes('<script'), 'the setup page runs nothing');
+  });
+
+  test('the setup page escapes the detail it is handed', () => {
+    const page = setupPage({ blocker: 'database', detail: '<img src=x onerror=alert(1)>' });
+    assert.ok(!page.includes('<img src=x'));
+    assert.match(page, /&lt;img/);
+  });
+
+  test("the committed deployment.json is valid and fails closed", () => {
+    const config = readDeploymentConfig({}, readDeploymentFile());
+    assert.ok(['google', 'gateway'].includes(config.accessMode));
+    assert.equal(config.ready, false, 'nothing is configured in a test environment, so it must refuse');
+  });
 });
 
 // ---------------------------------------------------------------------------

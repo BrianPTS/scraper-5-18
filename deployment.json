@@ -1,0 +1,5 @@
+{
+  "_comment": "How the hosted copy of this dashboard is protected. See src/deployment.js.",
+  "_options": "google = the app checks Google sign-in itself (needs 4 environment variables). gateway = Vercel's own password/team protection guards the door before a request reaches the app (needs none).",
+  "accessMode": "google"
+}
