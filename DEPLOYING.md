@@ -7,8 +7,21 @@ Monday is still there on Friday, and everyone sees the same data.
 Budget about 20 minutes the first time. Nothing here needs a credit card —
 Vercel's Hobby plan and Neon's free database tier both cover this comfortably.
 
-There are five steps. Do them in order; step 4 needs a URL that only exists
-after step 2.
+## Two routes, depending on who is doing the work
+
+**A — one shared password (simplest).** Vercel itself asks for a password
+before anyone reaches the dashboard. Nothing to configure in Google, and no
+environment variables to type. Whoever runs the deploy can switch the
+protection on and set the password themselves; the only thing left for you is
+connecting the database, which is four clicks and no typing. The trade-off is
+that everyone shares one password, so you cannot tell who did what.
+
+**B — Google sign-in (per person).** Everyone signs in with their own Google
+account, restricted to your company. More secure and it records who is who, but
+it needs an OAuth client created in Google Cloud Console and four environment
+variables pasted into Vercel — steps 4 and 5 below.
+
+Route A is steps 1–3 plus switching on protection. Route B is all five steps.
 
 ---
 
@@ -51,6 +64,19 @@ the URL down; you need it in step 4.
 
 Vercel sets `DATABASE_URL` for you. The tables create themselves on first use —
 there is no migration to run.
+
+## 3b. Route A only: switch on the password
+
+In the Vercel project: **Settings** → **Deployment Protection** → **Password
+Protection**. Turn it on, set a password, and save. Vercel now asks for that
+password before any request reaches the dashboard.
+
+Then set `accessMode` to `"gateway"` in `deployment.json` and redeploy — that
+line is how the app knows something in front of it is doing the checking. Until
+it says so, the app assumes nothing is and refuses to serve. Do it in this
+order, never the reverse.
+
+That is the end of route A. Skip to *Running it day to day*.
 
 ## 4. Create the Google sign-in credentials
 
