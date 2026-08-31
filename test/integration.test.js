@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -144,6 +145,26 @@ const postJson = (path, body) => ({
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),
 });
+
+/**
+ * GET a path exactly as written, over a bare socket.
+ *
+ * `fetch` resolves `..` against the origin before a byte leaves the process, so
+ * it cannot express the request a traversal attempt actually sends. This can.
+ */
+function rawGet(path) {
+  const { hostname, port } = new URL(baseUrl);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const socket = connect({ host: hostname, port: Number(port) }, () => {
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: ${hostname}:${port}\r\nConnection: close\r\n\r\n`);
+    });
+    let raw = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => (raw += chunk));
+    socket.on('error', rejectPromise);
+    socket.on('end', () => resolvePromise(raw));
+  });
+}
 
 test('serves an empty report before anything is imported', async () => {
   const { status, body } = await api('/api/report');
@@ -299,9 +320,27 @@ test('pushes a live update over SSE when data changes', async () => {
   await api('/api/ignore', postJson('', { kind: 'charge', id: 'tx_sample_11', ignored: false }));
 });
 
-test('refuses to serve files outside public/', async () => {
+test('refuses to serve files outside client/', async () => {
   const res = await fetch(`${baseUrl}/../server.js`, { redirect: 'manual' });
   assert.ok(res.status === 403 || res.status === 404, `expected traversal to fail, got ${res.status}`);
+});
+
+test('will not hand out the deployment secrets under any spelling of the path', async () => {
+  // `client/` sits one level below the project root, next to `secrets.json` —
+  // the file that holds the session secret and the password hash. A traversal
+  // that escapes by a single level lands on it, so try the usual disguises.
+  for (const path of [
+    '/../secrets.json',
+    '/..%2fsecrets.json',
+    '/%2e%2e/secrets.json',
+    '/..%5csecrets.json',
+    '/client/../secrets.json',
+    '/..//..//secrets.json',
+  ]) {
+    const raw = await rawGet(path);
+    assert.doesNotMatch(raw, /sessionSecret|scrypt/, `${path} leaked secrets.json`);
+    assert.doesNotMatch(raw, /^HTTP\/1\.1 200/, `${path} was answered with 200`);
+  }
 });
 
 test('serves the dashboard itself', async () => {

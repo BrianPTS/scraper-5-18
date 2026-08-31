@@ -39,6 +39,7 @@ import {
   handlePasswordSubmit,
   servePasswordPage,
 } from '../src/password-routes.js';
+import { serveStatic } from '../src/static.js';
 import { PostgresStore } from '../src/store-postgres.js';
 
 const authConfig = readAuthConfig();
@@ -107,6 +108,12 @@ export default async function handler(req, res) {
     } else if (url.pathname.startsWith('/api/auth/')) {
       return sendJson(res, 404, { error: 'This deployment does not use Google sign-in.' });
     }
+
+    // --- the dashboard's own files -----------------------------------------
+    // Reached only by a request that got past the checks above. These are not
+    // handed to the CDN precisely so that they cannot be reached any other way
+    // (see src/static.js).
+    if (!url.pathname.startsWith('/api/')) return serveStatic(res, url.pathname);
 
     // --- everything else needs the workspace loaded ------------------------
     const store = new PostgresStore();

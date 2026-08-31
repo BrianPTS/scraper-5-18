@@ -15,10 +15,10 @@
  * useful way to test the hosted configuration before deploying it.
  */
 
-import { createReadStream, existsSync, mkdirSync, watch } from 'node:fs';
+import { existsSync, mkdirSync, watch } from 'node:fs';
 import { readFile, readdir, rename, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ClientError, handleApi, importFile, sendJson } from './src/api.js';
@@ -30,10 +30,10 @@ import {
   handlePasswordSubmit,
   servePasswordPage,
 } from './src/password-routes.js';
+import { serveStatic } from './src/static.js';
 import { Store, defaultStorePath } from './src/store.js';
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
-const PUBLIC_DIR = join(ROOT, 'public');
 const INBOX_DIR = process.env.INBOX_DIR ? resolve(process.env.INBOX_DIR) : join(ROOT, 'inbox');
 const PROCESSED_DIR = join(INBOX_DIR, 'processed');
 // Not `Number(PORT) || 4173`: PORT=0 is a legitimate request for "any free
@@ -50,15 +50,6 @@ const passwordMode = deployment.accessMode === 'password';
 
 /** @type {Set<import('node:http').ServerResponse>} */
 const sseClients = new Set();
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-};
 
 // ---------------------------------------------------------------------------
 // Watched inbox — drop today's exports in ./inbox and they load themselves
@@ -171,29 +162,6 @@ function broadcast(event) {
 }
 
 // ---------------------------------------------------------------------------
-// Static files
-// ---------------------------------------------------------------------------
-
-async function serveStatic(req, res, pathname) {
-  const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-  const target = normalize(join(PUBLIC_DIR, rel));
-  // Path traversal guard: the resolved path must stay inside public/.
-  if (target !== PUBLIC_DIR && !target.startsWith(PUBLIC_DIR + sep)) {
-    res.writeHead(403).end('Forbidden');
-    return;
-  }
-  if (!existsSync(target)) {
-    res.writeHead(404, { 'content-type': 'text/plain' }).end('Not found');
-    return;
-  }
-  res.writeHead(200, {
-    'content-type': MIME[extname(target).toLowerCase()] || 'application/octet-stream',
-    'cache-control': 'no-cache',
-  });
-  createReadStream(target).pipe(res);
-}
-
-// ---------------------------------------------------------------------------
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -219,7 +187,7 @@ const server = createServer(async (req, res) => {
         await handleApi(req, res, url, { store, realtime: true, handleStream });
         return;
       }
-      return serveStatic(req, res, url.pathname);
+      return serveStatic(res, url.pathname);
     }
 
     if (url.pathname.startsWith('/api/auth/')) {
@@ -253,7 +221,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    await serveStatic(req, res, url.pathname);
+    await serveStatic(res, url.pathname);
   } catch (err) {
     const status = err instanceof ClientError ? err.status : 500;
     if (status === 500) console.error('[http]', err);

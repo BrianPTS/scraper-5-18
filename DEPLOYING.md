@@ -47,18 +47,31 @@ own history.)
 ## 2. Create the Vercel project
 
 1. Go to [vercel.com/new](https://vercel.com/new) and import that repository.
-2. Leave every build setting alone. There is no build step — Vercel serves
-   `public/` as static files and runs `api/index.js` as a function. `vercel.json`
-   pins that arrangement, so whatever the import screen guesses does not matter.
+2. Leave every build setting alone. There is no build step — every request goes
+   to `api/index.js`, which checks who is asking and then serves the dashboard
+   out of `client/`. `vercel.json` pins that arrangement, so whatever the import
+   screen guesses does not matter.
 3. Click **Deploy**.
 
-> **Do not remove `"framework": null` and `"outputDirectory"` from
-> `vercel.json`.** Left to guess, Vercel sees `server.js` and an npm `start`
-> script, concludes this is a long-running Node server, and deploys *that*
-> instead — ignoring `api/` entirely. `server.js` is the local build: it keeps
-> its data in a `data/` folder it creates on disk, which a serverless function
-> cannot do, so every request dies with `ENOENT` before reaching any of our
-> code. Those two lines say "there is no server to detect."
+Two lines in `vercel.json` are load-bearing, and both are easy to "tidy away":
+
+> **`"framework": null`.** Left to guess, Vercel sees `server.js` and an npm
+> `start` script, concludes this is a long-running Node server, and deploys
+> *that* instead — ignoring `api/` entirely. `server.js` is the local build: it
+> keeps its data in a `data/` folder it creates on disk, which a serverless
+> function cannot do, so every request dies with `ENOENT` before reaching any of
+> our code.
+
+> **`"outputDirectory": "static"`.** Whatever this names is handed to the CDN,
+> and the CDN answers *before* any rewrite is consulted — a rewrite only sees
+> paths that matched no file. So anything in that directory is served to the
+> whole internet, sign-in or no sign-in. It points at `static/`, which holds
+> only `robots.txt`. The dashboard lives in `client/`, which is deliberately not
+> a static directory: it reaches the browser only through the function, after
+> the password check. Do not move it back to `public/` — Vercel treats that name
+> as static automatically, and the sign-in check would be bypassed for the app
+> shell. (There is no data in the shell; every figure arrives over `/api/*`,
+> which checks regardless. But that is a thin thing to rely on.)
 
 It will finish in under a minute and give you a URL like
 `ticket-reconciler.vercel.app`. **Opening it now will say the deployment is not
@@ -166,10 +179,13 @@ signs everybody out at once, including them.
   `/api/import`, `/api/export`, linking, ignoring, settings — all refuse
   anonymous requests with a `401`, and refuse a forged or expired session
   cookie the same way. There are tests for each of these.
-- **Not secret:** the dashboard's own HTML, CSS and JavaScript. Someone who
-  guesses your URL and has no session sees the sign-in screen; if they fetch
-  `/app.js` directly they get the application code, which contains no data of
-  yours. This is how every hosted web app works.
+- **Also protected, though it need not be:** the dashboard's own HTML, CSS and
+  JavaScript. There is no data in those files — every figure on the page arrives
+  later over `/api/*` — so most hosted apps serve them to anyone, and nothing
+  would leak if this one did. It doesn't. Someone who guesses your URL and has
+  no session gets the sign-in screen at every path, `/app.js` included, because
+  those files are read by the function after the check rather than handed to the
+  CDN ahead of it.
 - **Sessions** are HttpOnly, Secure, SameSite=Lax cookies signed with
   `SESSION_SECRET`. They cannot be edited by a browser or by JavaScript, and
   they expire after 12 hours.

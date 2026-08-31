@@ -191,9 +191,11 @@ src/match.js           The reconciliation engine (pure, no I/O)
 src/report.js          Day scoping, totals, coverage checks
 src/store.js           JSON file persistence (local)
 src/store-postgres.js  Postgres persistence (hosted)
-public/                The dashboard (vanilla JS, no build)
+src/static.js          Serves client/ — behind the sign-in check, not by a CDN
+client/                The dashboard (vanilla JS, no build)
+static/                The only files served without signing in (robots.txt)
 samples/               Synthetic exports covering every case
-test/                  118 tests: unit, engine, HTTP, auth, and database
+test/                  Unit, engine, HTTP, auth, and database tests
 ```
 
 The only dependency in the whole project is `pg`, and only the hosted build
