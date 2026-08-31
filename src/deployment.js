@@ -60,7 +60,12 @@ export function readSecretsFile(path = SECRETS_PATH) {
 export function readDeploymentConfig(env = process.env, file = readDeploymentFile(), secrets = readSecretsFile()) {
   const declared = String(env.ACCESS_MODE || file.accessMode || '').toLowerCase();
   const googleConfigured = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
-  const passwordConfigured = Boolean(secrets?.password?.hash && secrets?.sessionSecret);
+  // Password mode takes *both* a declaration and the secrets. Secrets alone are
+  // not enough: a stray secrets.json left in a checkout would otherwise put a
+  // developer's machine into a different mode than the one they are testing,
+  // which is how a deployment ends up behaving unlike everything that verified it.
+  const hasSecrets = Boolean(secrets?.password?.hash && secrets?.sessionSecret);
+  const passwordConfigured = declared === 'password' && hasSecrets;
 
   // Strongest available wins, and anything unrecognised falls back to `google`
   // — which, with no credentials set, refuses to serve. It fails closed.
@@ -68,11 +73,13 @@ export function readDeploymentConfig(env = process.env, file = readDeploymentFil
   if (googleConfigured) accessMode = 'google';
   else if (passwordConfigured) accessMode = 'password';
   else if (declared === 'gateway') accessMode = 'gateway';
+  else if (declared === 'password') accessMode = 'password'; // declared but unusable
 
   const hasDatabase = Boolean(env.DATABASE_URL);
 
   let blocker;
   if (accessMode === 'google' && !googleConfigured) blocker = 'auth';
+  else if (accessMode === 'password' && !hasSecrets) blocker = 'auth';
   else if (!hasDatabase) blocker = 'database';
 
   return {

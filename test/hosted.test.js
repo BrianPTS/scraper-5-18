@@ -214,6 +214,19 @@ describe('deployment readiness', () => {
     assert.equal(ready.accessMode, 'gateway');
   });
 
+  test('secrets alone do not switch modes — the deployment must declare it', () => {
+    const secrets = { sessionSecret: 'x', password: { hash: 'h' } };
+    // A secrets.json sitting in a checkout must not change how the app behaves.
+    assert.equal(readDeploymentConfig({ DATABASE_URL: 'x' }, {}, secrets).accessMode, 'google');
+    assert.equal(readDeploymentConfig({ DATABASE_URL: 'x' }, { accessMode: 'password' }, secrets).accessMode, 'password');
+  });
+
+  test('a declared password mode with no secrets refuses to serve', () => {
+    const config = readDeploymentConfig({ DATABASE_URL: 'x' }, { accessMode: 'password' }, {});
+    assert.equal(config.ready, false);
+    assert.equal(config.blocker, 'auth');
+  });
+
   test('gateway mode cannot be reached by accident', () => {
     // Anything other than the exact declaration leaves the app doing its own
     // checking, which fails closed rather than open.
@@ -616,7 +629,14 @@ describe('a server in password mode', () => {
     );
 
     child = spawn(process.execPath, [join(ROOT, 'server.js')], {
-      env: { ...process.env, PORT: '0', STORE_FILE: join(workDir, 'store.json'), INBOX_DIR: join(workDir, 'inbox') },
+      env: {
+        ...process.env,
+        PORT: '0',
+        STORE_FILE: join(workDir, 'store.json'),
+        INBOX_DIR: join(workDir, 'inbox'),
+        // A deployment declares its mode; the env var is the same declaration.
+        ACCESS_MODE: 'password',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
