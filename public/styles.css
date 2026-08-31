@@ -360,3 +360,7 @@ td.actions { white-space: nowrap; text-align: right; }
   flex-direction: column;
   gap: 4px;
 }
+
+.whoami { color: var(--muted); font-size: 12px; }
+.whoami a { color: var(--accent); text-decoration: none; }
+.whoami a:hover { text-decoration: underline; }

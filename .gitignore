@@ -3,6 +3,9 @@ data/
 inbox/*
 !inbox/README.md
 
+.env
+.env.local
+.vercel/
 node_modules/
 *.log
 .DS_Store

@@ -15,8 +15,16 @@ the dashboard tells you, in one screen:
 
 No build step, no database, no dependencies. Node 20+ and a browser.
 
-There is also a single-file browser build — `ticket-reconciler-standalone.html`
-— that needs nothing installed at all: open it and drop the files on the page.
+Three ways to run it, same engine behind all of them:
+
+| | What it needs | Where the data lives |
+| --- | --- | --- |
+| **Single file** (`ticket-reconciler-standalone.html`) | Nothing — open it in a browser | That browser only |
+| **Local server** (`node server.js`) | Node 20+ | A JSON file on your machine |
+| **Hosted on Vercel** | A free Vercel + Neon account | Postgres, shared by your team, behind Google sign-in |
+
+For the hosted version, see **[DEPLOYING.md](DEPLOYING.md)** — about 20 minutes,
+no credit card.
 
 ```bash
 node server.js          # → http://localhost:4173
@@ -172,17 +180,24 @@ Changing a setting re-runs the reconciliation immediately across all data.
 ## Layout
 
 ```
-server.js              HTTP server, imports, inbox watcher, SSE
+server.js              Local server: static files, SSE, watched inbox
+api/index.js           Vercel entry point — the same routes, serverless
+src/api.js             The HTTP routes, shared by both of the above
+src/auth.js            Google sign-in and signed session cookies
 src/csv.js             RFC 4180 parser and writer
-src/xlsx.js            Minimal .xlsx reader (no dependencies)
-src/normalize.js       Both exports → one canonical shape
+src/xlsx.js            Minimal .xlsx reader
+src/normalize.js       All three exports → one canonical shape
 src/match.js           The reconciliation engine (pure, no I/O)
-src/report.js          Day scoping and totals
-src/store.js           Atomic JSON persistence
+src/report.js          Day scoping, totals, coverage checks
+src/store.js           JSON file persistence (local)
+src/store-postgres.js  Postgres persistence (hosted)
 public/                The dashboard (vanilla JS, no build)
 samples/               Synthetic exports covering every case
-test/                  84 tests: unit, engine, and full HTTP
+test/                  118 tests: unit, engine, HTTP, auth, and database
 ```
+
+The only dependency in the whole project is `pg`, and only the hosted build
+uses it — running locally or opening the single file touches nothing external.
 
 `src/match.js` is pure and has no I/O, so it can be lifted into a script or a
 cron job without the server.
@@ -195,6 +210,14 @@ cron job without the server.
 | `HOST` | `127.0.0.1` | Bind address — loopback only by default |
 | `STORE_FILE` | `data/store.json` | Where imported data lives |
 | `INBOX_DIR` | `./inbox` | Watched import folder |
+| `DATABASE_URL` | — | Postgres, for the hosted deployment |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Turns on Google sign-in |
+| `SESSION_SECRET` | — | Signs session cookies; changing it signs everyone out |
+| `ALLOWED_DOMAINS` / `ALLOWED_EMAILS` | — | Who may sign in. Neither set means nobody |
+
+Sign-in is off until `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set, so
+running locally needs no setup. Set them half-way and the server refuses to
+serve rather than quietly leaving the data open. See `.env.example`.
 
 ### Data and privacy
 
@@ -209,10 +232,18 @@ if you intend to expose it, and put it behind auth if you do.
 npm test
 ```
 
-84 tests: the CSV and XLSX parsers, all three timestamp formats, and the
+118 tests: the CSV and XLSX parsers, all three timestamp formats, and the
 matching rules — card conflicts, declines, reversals, manual
 links, ambiguity, ordering stability — plus an end-to-end pass that boots the
-server and drives the real HTTP API.
+server and drives the real HTTP API, the session and allowlist logic, and the
+sign-in gate itself (every data route is checked to refuse an anonymous or
+forged request).
+
+The Postgres tests need a database and skip themselves without one:
+
+```bash
+TEST_DATABASE_URL=postgres://... npm test
+```
 
 ## Try it without your own data
 

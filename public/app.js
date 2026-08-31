@@ -505,6 +505,10 @@ function render() {
 async function refresh() {
   const day = state.day ?? 'all';
   const res = await fetch(`/api/report?day=${encodeURIComponent(day)}`);
+  if (res.status === 401) {
+    window.location.href = `/api/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
+    return;
+  }
   if (!res.ok) {
     toast('Could not load the report.', 'error');
     return;
@@ -858,11 +862,33 @@ async function handleAction(e) {
   }
 }
 
-/** Live updates. Reconnects on its own if the server restarts. */
-function connectLive() {
-  const source = new EventSource('/api/stream');
+/**
+ * Live updates, two ways.
+ *
+ * Run locally, the server is a long-lived process and pushes changes over
+ * Server-Sent Events the moment they happen. Hosted on Vercel each request is a
+ * separate short-lived function, so there is nothing to hold a stream open —
+ * there the dashboard polls instead. `/api/me` says which world we are in.
+ */
+function connectLive(realtime) {
   const indicator = $('#live');
 
+  if (!realtime) {
+    indicator.textContent = '';
+    indicator.append(Object.assign(document.createElement('i'), {}), document.createTextNode('auto'));
+    indicator.title = 'Checking for new data every 20 seconds';
+    setInterval(() => {
+      // Skip the poll while the tab is in the background — it would only pile
+      // up requests nobody is looking at.
+      if (document.visibilityState === 'visible') refresh();
+    }, 20_000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refresh();
+    });
+    return;
+  }
+
+  const source = new EventSource('/api/stream');
   source.addEventListener('open', () => indicator.classList.remove('off'));
   source.addEventListener('update', () => refresh());
   source.addEventListener('error', () => {
@@ -871,6 +897,32 @@ function connectLive() {
   });
 }
 
-wireEvents();
-connectLive();
-refresh();
+/** Who is signed in, and what can this deployment do? */
+async function boot() {
+  let me = { realtime: true, authEnabled: false };
+  try {
+    const res = await fetch('/api/me');
+    if (res.status === 401) {
+      // The session expired while the tab was open. Send them to sign in again
+      // rather than letting every panel fail with an error toast.
+      window.location.href = `/api/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
+      return;
+    }
+    if (res.ok) me = await res.json();
+  } catch {
+    // An older local server with no /api/me: carry on with the defaults.
+  }
+
+  if (me.user?.email && me.authEnabled) {
+    const who = document.createElement('span');
+    who.className = 'whoami';
+    who.innerHTML = `${esc(me.user.email)} · <a href="/api/auth/logout">Sign out</a>`;
+    $('.controls').append(who);
+  }
+
+  wireEvents();
+  connectLive(me.realtime !== false);
+  refresh();
+}
+
+boot();
