@@ -151,6 +151,22 @@ export function parseCookies(header) {
   return out;
 }
 
+export function sessionCookie(token, { secure, maxAge = SESSION_TTL_SECONDS }) {
+  return cookie(SESSION_COOKIE, token, { maxAge, secure });
+}
+
+export function clearSessionCookie({ secure }) {
+  return cookie(SESSION_COOKIE, '', { maxAge: 0, secure });
+}
+
+export function readSessionCookie(req) {
+  return parseCookies(req.headers.cookie)[SESSION_COOKIE];
+}
+
+export function requestIsSecure(req) {
+  return isSecureRequest(req);
+}
+
 function cookie(name, value, { maxAge, secure }) {
   const bits = [
     `${name}=${encodeURIComponent(value)}`,

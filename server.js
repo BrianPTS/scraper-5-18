@@ -23,6 +23,13 @@ import { fileURLToPath } from 'node:url';
 
 import { ClientError, handleApi, importFile, sendJson } from './src/api.js';
 import { getSession, handleCallback, handleLogin, handleLogout, readAuthConfig, signInPage } from './src/auth.js';
+import { readDeploymentConfig } from './src/deployment.js';
+import {
+  getPasswordSession,
+  handlePasswordLogout,
+  handlePasswordSubmit,
+  servePasswordPage,
+} from './src/password-routes.js';
 import { Store, defaultStorePath } from './src/store.js';
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
@@ -36,6 +43,10 @@ const HOST = process.env.HOST || '127.0.0.1';
 
 const store = new Store(process.env.STORE_FILE || defaultStorePath(ROOT));
 const authConfig = readAuthConfig();
+// The hosted configuration runs here too, which is how it gets tested before
+// it is deployed anywhere.
+const deployment = readDeploymentConfig();
+const passwordMode = deployment.accessMode === 'password';
 
 /** @type {Set<import('node:http').ServerResponse>} */
 const sseClients = new Set();
@@ -187,6 +198,30 @@ async function serveStatic(req, res, pathname) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
+    if (passwordMode) {
+      if (url.pathname === '/api/auth/password' && req.method === 'POST') {
+        return handlePasswordSubmit(req, res, deployment);
+      }
+      if (url.pathname === '/api/auth/logout') return handlePasswordLogout(req, res);
+      if (url.pathname === '/api/auth/login') {
+        return servePasswordPage(req, res, { next: url.searchParams.get('next') || '/' });
+      }
+
+      const session = getPasswordSession(req, deployment);
+      if (!session) {
+        if (url.pathname.startsWith('/api/')) return sendJson(res, 401, { error: 'Please sign in.' });
+        return servePasswordPage(req, res, { next: url.pathname });
+      }
+      if (url.pathname === '/api/me') {
+        return sendJson(res, 200, { user: session, realtime: true, authEnabled: true, mode: 'password' });
+      }
+      if (url.pathname.startsWith('/api/')) {
+        await handleApi(req, res, url, { store, realtime: true, handleStream });
+        return;
+      }
+      return serveStatic(req, res, url.pathname);
+    }
+
     if (url.pathname.startsWith('/api/auth/')) {
       if (!authConfig.enabled) return sendJson(res, 404, { error: 'Sign-in is not configured on this server.' });
       if (authConfig.reason) return sendJson(res, 500, { error: authConfig.reason });
@@ -238,6 +273,7 @@ async function main() {
     console.log(`\n  Ticket Reconciler  →  http://${HOST}:${bound.port}`);
     console.log(`  Store: ${store.file} (${counts})`);
     console.log(`  Inbox: drop CSV or XLSX exports in ${INBOX_DIR} and they import automatically`);
+    if (passwordMode) console.log('  Sign-in: shared password (secrets.json)');
     if (authConfig.enabled) {
       console.log(
         authConfig.reason

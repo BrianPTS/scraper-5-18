@@ -8,6 +8,9 @@
  *
  *   google   — the app itself does the checking: Google sign-in against an
  *              email allowlist. Needs four environment variables.
+ *   password — the app asks for one shared password. The hash and the session
+ *              secret ride along in `secrets.json`, deployed but never
+ *              committed, so this route needs no environment variables either.
  *   gateway  — something in front of the app already does it, before a request
  *              ever arrives: Vercel's own password or team protection. Needs no
  *              environment variables, which matters because they cannot be set
@@ -23,9 +26,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const CONFIG_PATH = fileURLToPath(new URL('../deployment.json', import.meta.url));
+const SECRETS_PATH = fileURLToPath(new URL('../secrets.json', import.meta.url));
 
-/** Read the committed deployment declaration, if there is one. */
-export function readDeploymentFile(path = CONFIG_PATH) {
+/** Read a JSON file, treating anything unreadable as absent. */
+function readJsonFile(path) {
   try {
     if (!existsSync(path)) return {};
     return JSON.parse(readFileSync(path, 'utf8'));
@@ -34,25 +38,51 @@ export function readDeploymentFile(path = CONFIG_PATH) {
   }
 }
 
+/** Read the committed deployment declaration, if there is one. */
+export function readDeploymentFile(path = CONFIG_PATH) {
+  return readJsonFile(path);
+}
+
+/**
+ * Read the deployed-but-uncommitted secrets, if there are any. Holds the
+ * password hash and session secret for `password` mode; absent everywhere
+ * except a real deployment.
+ */
+export function readSecretsFile(path = SECRETS_PATH) {
+  return readJsonFile(path);
+}
+
 /**
  * @param {object} env
  * @param {object} [file] parsed deployment.json, for tests
  * @returns {{accessMode: 'google'|'gateway', hasDatabase: boolean, ready: boolean, blocker?: string}}
  */
-export function readDeploymentConfig(env = process.env, file = readDeploymentFile()) {
+export function readDeploymentConfig(env = process.env, file = readDeploymentFile(), secrets = readSecretsFile()) {
   const declared = String(env.ACCESS_MODE || file.accessMode || '').toLowerCase();
   const googleConfigured = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+  const passwordConfigured = Boolean(secrets?.password?.hash && secrets?.sessionSecret);
 
-  // Google credentials win: if they are present, the app does its own checking
-  // whatever the file says, because that is the stronger of the two.
-  const accessMode = googleConfigured ? 'google' : declared === 'gateway' ? 'gateway' : 'google';
+  // Strongest available wins, and anything unrecognised falls back to `google`
+  // — which, with no credentials set, refuses to serve. It fails closed.
+  let accessMode = 'google';
+  if (googleConfigured) accessMode = 'google';
+  else if (passwordConfigured) accessMode = 'password';
+  else if (declared === 'gateway') accessMode = 'gateway';
+
   const hasDatabase = Boolean(env.DATABASE_URL);
 
   let blocker;
   if (accessMode === 'google' && !googleConfigured) blocker = 'auth';
   else if (!hasDatabase) blocker = 'database';
 
-  return { accessMode, hasDatabase, ready: !blocker, blocker };
+  return {
+    accessMode,
+    hasDatabase,
+    ready: !blocker,
+    blocker,
+    sessionSecret: accessMode === 'password' ? secrets.sessionSecret : undefined,
+    password: accessMode === 'password' ? secrets.password : undefined,
+  };
 }
 
 /**

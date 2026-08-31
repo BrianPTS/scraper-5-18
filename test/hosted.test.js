@@ -544,3 +544,174 @@ describe('a server with sign-in switched on', () => {
     assert.match(res.headers.get('set-cookie'), /Max-Age=0/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Shared-password mode
+// ---------------------------------------------------------------------------
+
+describe('password hashing', () => {
+  test('a correct password verifies, a wrong one does not', async () => {
+    const { hashPassword, verifyPassword } = await import('../src/password.js');
+    const record = await hashPassword('correct-horse-battery-staple');
+
+    assert.equal(await verifyPassword('correct-horse-battery-staple', record), true);
+    assert.equal(await verifyPassword('correct-horse-battery-stapl', record), false);
+    assert.equal(await verifyPassword('', record), false);
+    assert.equal(await verifyPassword(null, record), false);
+  });
+
+  test('the password itself is never stored', async () => {
+    const { hashPassword } = await import('../src/password.js');
+    const record = await hashPassword('super-secret-value');
+    assert.ok(!JSON.stringify(record).includes('super-secret-value'));
+    assert.equal(record.algorithm, 'scrypt');
+    assert.equal(Buffer.from(record.hash, 'hex').length, 32);
+  });
+
+  test('two hashes of the same password differ', async () => {
+    const { hashPassword } = await import('../src/password.js');
+    const [a, b] = await Promise.all([hashPassword('same'), hashPassword('same')]);
+    assert.notEqual(a.hash, b.hash, 'each hash must carry its own salt');
+    assert.notEqual(a.salt, b.salt);
+  });
+
+  test('a malformed record verifies nothing', async () => {
+    const { verifyPassword } = await import('../src/password.js');
+    for (const bad of [null, undefined, {}, { algorithm: 'md5' }, { algorithm: 'scrypt', hash: 'zz' }]) {
+      assert.equal(await verifyPassword('anything', bad), false);
+    }
+  });
+
+  test('generated passwords are long and varied', async () => {
+    const { generatePassword } = await import('../src/password.js');
+    const a = generatePassword();
+    const b = generatePassword();
+    assert.equal(a.split('-').length, 5);
+    assert.ok(a.length >= 20);
+    assert.notEqual(a, b);
+  });
+});
+
+describe('a server in password mode', () => {
+  let child;
+  let baseUrl;
+  let workDir;
+  let secretsPath;
+  const PASSWORD = 'test-password-for-the-suite';
+
+  before(async () => {
+    const { spawn } = await import('node:child_process');
+    const { mkdtemp, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { hashPassword } = await import('../src/password.js');
+    const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+    workDir = await mkdtemp(join(tmpdir(), 'reconciler-pw-'));
+    // secrets.json is read from the project root, so write a real one and
+    // remove it afterwards — this is exactly what a deployment carries.
+    secretsPath = join(ROOT, 'secrets.json');
+    await writeFile(
+      secretsPath,
+      JSON.stringify({ sessionSecret: 'test-session-secret', password: await hashPassword(PASSWORD) }),
+    );
+
+    child = spawn(process.execPath, [join(ROOT, 'server.js')], {
+      env: { ...process.env, PORT: '0', STORE_FILE: join(workDir, 'store.json'), INBOX_DIR: join(workDir, 'inbox') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    baseUrl = await new Promise((resolvePromise, rejectPromise) => {
+      const timer = setTimeout(() => rejectPromise(new Error('server did not start')), 10_000);
+      let buffer = '';
+      child.stdout.on('data', (chunk) => {
+        buffer += chunk;
+        const match = buffer.match(/http:\/\/[\d.]+:(\d+)/);
+        if (match) {
+          clearTimeout(timer);
+          resolvePromise(match[0]);
+        }
+      });
+      child.stderr.on('data', (c) => process.stderr.write(`[pw-server] ${c}`));
+      child.on('exit', (code) => rejectPromise(new Error(`server exited: ${code}`)));
+    });
+  });
+
+  after(async () => {
+    child?.kill('SIGTERM');
+    const { rm } = await import('node:fs/promises');
+    if (secretsPath) await rm(secretsPath, { force: true });
+    if (workDir) await rm(workDir, { recursive: true, force: true });
+  });
+
+  const signIn = async (password) => {
+    const res = await fetch(`${baseUrl}/api/auth/password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ password, next: '/' }),
+      redirect: 'manual',
+    });
+    return res;
+  };
+
+  test('the front page is the password form', async () => {
+    const res = await fetch(baseUrl);
+    const html = await res.text();
+    assert.match(html, /Enter the team password/);
+    assert.ok(!html.includes('Import CSV'), 'no dashboard before sign-in');
+  });
+
+  test('data routes refuse an anonymous request', async () => {
+    for (const path of ['/api/report', '/api/export', '/api/me']) {
+      assert.equal((await fetch(`${baseUrl}${path}`)).status, 401, path);
+    }
+  });
+
+  test('the wrong password is refused, and says nothing useful', async () => {
+    const res = await signIn('not-the-password');
+    assert.equal(res.status, 401);
+    assert.equal(res.headers.get('set-cookie'), null, 'no session may be issued');
+    const html = await res.text();
+    assert.match(html, /was not right/);
+    assert.ok(!html.includes(PASSWORD));
+  });
+
+  test('the right password opens the door', async () => {
+    const res = await signIn(PASSWORD);
+    assert.equal(res.status, 302);
+
+    const cookie = res.headers.get('set-cookie');
+    assert.match(cookie, /reconciler_session=/);
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Lax/);
+
+    const token = cookie.split(';')[0];
+    const me = await fetch(`${baseUrl}/api/me`, { headers: { cookie: token } });
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).mode, 'password');
+
+    const report = await fetch(`${baseUrl}/api/report`, { headers: { cookie: token } });
+    assert.equal(report.status, 200);
+    assert.ok(Array.isArray((await report.json()).matches));
+  });
+
+  test('a forged session cookie is refused', async () => {
+    const forged = createSessionToken({ email: 'team' }, 'the-wrong-secret');
+    const res = await fetch(`${baseUrl}/api/report`, { headers: { cookie: `reconciler_session=${forged}` } });
+    assert.equal(res.status, 401);
+  });
+
+  test('the sign-in form only ever returns to this site', async () => {
+    const res = await fetch(`${baseUrl}/api/auth/password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ password: PASSWORD, next: 'https://evil.example.com/steal' }),
+      redirect: 'manual',
+    });
+    assert.equal(res.headers.get('location'), '/', 'an off-site redirect must be discarded');
+  });
+
+  test('signing out clears the session', async () => {
+    const res = await fetch(`${baseUrl}/api/auth/logout`, { redirect: 'manual' });
+    assert.match(res.headers.get('set-cookie'), /Max-Age=0/);
+  });
+});

@@ -33,6 +33,12 @@ import {
   signInPage,
 } from '../src/auth.js';
 import { readDeploymentConfig, setupPage } from '../src/deployment.js';
+import {
+  getPasswordSession,
+  handlePasswordLogout,
+  handlePasswordSubmit,
+  servePasswordPage,
+} from '../src/password-routes.js';
 import { PostgresStore } from '../src/store-postgres.js';
 
 const authConfig = readAuthConfig();
@@ -41,6 +47,7 @@ const deployment = readDeploymentConfig();
 export default async function handler(req, res) {
   const url = new URL(req.url, `https://${req.headers['x-forwarded-host'] || req.headers.host || 'localhost'}`);
   const isApi = url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/');
+  // Vercel may have parsed a form body already; the password route re-reads it.
 
   try {
     // --- an unfinished deployment shows what to do, and nothing else -------
@@ -75,6 +82,25 @@ export default async function handler(req, res) {
         // `realtime: false` tells the dashboard to poll rather than open a
         // stream a serverless function could never hold open.
         return sendJson(res, 200, { user: session, realtime: false, authEnabled: true });
+      }
+    } else if (deployment.accessMode === 'password') {
+      if (url.pathname === '/api/auth/password' && req.method === 'POST') {
+        return handlePasswordSubmit(req, res, deployment);
+      }
+      if (url.pathname === '/api/auth/logout') return handlePasswordLogout(req, res);
+      // The dashboard bounces an expired session to /api/auth/login. In this
+      // mode that is simply the password form.
+      if (url.pathname === '/api/auth/login') {
+        return servePasswordPage(req, res, { next: url.searchParams.get('next') || '/' });
+      }
+
+      const session = getPasswordSession(req, deployment);
+      if (!session) {
+        if (isApi) return sendJson(res, 401, { error: 'Please sign in.' });
+        return servePasswordPage(req, res, { next: url.pathname });
+      }
+      if (url.pathname === '/api/me') {
+        return sendJson(res, 200, { user: session, realtime: false, authEnabled: true, mode: 'password' });
       }
     } else if (url.pathname === '/api/me') {
       return sendJson(res, 200, { user: { email: '', name: '' }, realtime: false, authEnabled: false });
