@@ -1,6 +1,5 @@
 {
   "_comment": "How the hosted copy of this dashboard is protected. See src/deployment.js.",
-  "_options": "google = the app checks Google sign-in itself (needs 4 environment variables). gateway = Vercel's own password/team protection guards the door before a request reaches the app (needs none).",
-  "_warning": "Only set this to gateway as part of a deploy where the protection is already switched on and verified. Committing gateway with no protection in front of it would serve the data to anyone. google is the fail-closed default and stays here until then.",
-  "accessMode": "google"
+  "_options": "google = the app checks Google sign-in itself (needs 4 environment variables). password = the app asks for one shared password, using the hash in secrets.json. gateway = something in front of the app already checks (Vercel's own protection).",
+  "accessMode": "password"
 }

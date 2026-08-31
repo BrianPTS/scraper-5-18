@@ -221,6 +221,12 @@ describe('deployment readiness', () => {
     assert.equal(readDeploymentConfig({ DATABASE_URL: 'x' }, { accessMode: 'password' }, secrets).accessMode, 'password');
   });
 
+  test('an empty ACCESS_MODE overrides the file, rather than being ignored', () => {
+    const file = { accessMode: 'password' };
+    assert.equal(readDeploymentConfig({ ACCESS_MODE: '', DATABASE_URL: 'x' }, file, {}).accessMode, 'google');
+    assert.equal(readDeploymentConfig({ DATABASE_URL: 'x' }, file, {}).accessMode, 'password');
+  });
+
   test('a declared password mode with no secrets refuses to serve', () => {
     const config = readDeploymentConfig({ DATABASE_URL: 'x' }, { accessMode: 'password' }, {});
     assert.equal(config.ready, false);
@@ -258,9 +264,11 @@ describe('deployment readiness', () => {
     assert.match(page, /&lt;img/);
   });
 
-  test("the committed deployment.json is valid and fails closed", () => {
-    const config = readDeploymentConfig({}, readDeploymentFile());
-    assert.ok(['google', 'gateway'].includes(config.accessMode));
+  test('the committed deployment.json is valid and fails closed', () => {
+    // Whatever this checkout declares, a config with no database behind it must
+    // refuse to serve. That is the invariant worth pinning, not the mode.
+    const config = readDeploymentConfig({}, readDeploymentFile(), {});
+    assert.ok(['google', 'gateway', 'password'].includes(config.accessMode));
     assert.equal(config.ready, false, 'nothing is configured in a test environment, so it must refuse');
   });
 });
@@ -620,9 +628,10 @@ describe('a server in password mode', () => {
     const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
     workDir = await mkdtemp(join(tmpdir(), 'reconciler-pw-'));
-    // secrets.json is read from the project root, so write a real one and
-    // remove it afterwards — this is exactly what a deployment carries.
-    secretsPath = join(ROOT, 'secrets.json');
+    // Never the project root: an earlier version of this test wrote its
+    // secrets.json there and deleted it on cleanup, which quietly destroyed the
+    // real deployment's secrets. SECRETS_FILE keeps the test in its own sandbox.
+    secretsPath = join(workDir, 'secrets.json');
     await writeFile(
       secretsPath,
       JSON.stringify({ sessionSecret: 'test-session-secret', password: await hashPassword(PASSWORD) }),
@@ -636,6 +645,7 @@ describe('a server in password mode', () => {
         INBOX_DIR: join(workDir, 'inbox'),
         // A deployment declares its mode; the env var is the same declaration.
         ACCESS_MODE: 'password',
+        SECRETS_FILE: secretsPath,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -659,7 +669,7 @@ describe('a server in password mode', () => {
   after(async () => {
     child?.kill('SIGTERM');
     const { rm } = await import('node:fs/promises');
-    if (secretsPath) await rm(secretsPath, { force: true });
+    // secretsPath lives inside workDir, so this removes it too.
     if (workDir) await rm(workDir, { recursive: true, force: true });
   });
 

@@ -104,6 +104,11 @@ before(async () => {
       PORT: '0',
       STORE_FILE: join(workDir, 'store.json'),
       INBOX_DIR: join(workDir, 'inbox'),
+      // Say which mode this server is under test in, rather than inheriting
+      // whatever the checkout happens to declare — the deploy branch declares
+      // password mode, and these tests are about the open local server.
+      ACCESS_MODE: '',
+      SECRETS_FILE: join(workDir, 'no-secrets.json'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

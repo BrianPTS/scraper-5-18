@@ -26,7 +26,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const CONFIG_PATH = fileURLToPath(new URL('../deployment.json', import.meta.url));
-const SECRETS_PATH = fileURLToPath(new URL('../secrets.json', import.meta.url));
+// Overridable so a test can point at its own throwaway file. Without this the
+// only place to put one is the project root, and a test that cleans up after
+// itself would delete the real deployment's secrets.
+const SECRETS_PATH = process.env.SECRETS_FILE || fileURLToPath(new URL('../secrets.json', import.meta.url));
 
 /** Read a JSON file, treating anything unreadable as absent. */
 function readJsonFile(path) {
@@ -58,7 +61,9 @@ export function readSecretsFile(path = SECRETS_PATH) {
  * @returns {{accessMode: 'google'|'gateway', hasDatabase: boolean, ready: boolean, blocker?: string}}
  */
 export function readDeploymentConfig(env = process.env, file = readDeploymentFile(), secrets = readSecretsFile()) {
-  const declared = String(env.ACCESS_MODE || file.accessMode || '').toLowerCase();
+  // `??`, not `||`: ACCESS_MODE='' is a deliberate "no declaration" that must
+  // override the file, and an empty string is falsy.
+  const declared = String(env.ACCESS_MODE ?? file.accessMode ?? '').toLowerCase();
   const googleConfigured = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
   // Password mode takes *both* a declaration and the secrets. Secrets alone are
   // not enough: a stray secrets.json left in a checkout would otherwise put a
