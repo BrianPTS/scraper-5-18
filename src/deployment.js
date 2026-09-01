@@ -26,6 +26,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveDatabaseUrl } from './database-url.js';
+
 const CONFIG_PATH = fileURLToPath(new URL('../deployment.json', import.meta.url));
 // Overridable so a test can point at its own throwaway file. Without this the
 // only place to put one is the project root, and a test that cleans up after
@@ -100,7 +102,7 @@ export function readDeploymentConfig(env = process.env, file = readDeploymentFil
   else if (declared === 'gateway') accessMode = 'gateway';
   else if (declared === 'password') accessMode = 'password'; // declared but unusable
 
-  const hasDatabase = Boolean(env.DATABASE_URL);
+  const hasDatabase = Boolean(resolveDatabaseUrl(env));
 
   let blocker;
   if (accessMode === 'google' && !googleConfigured) blocker = 'auth';
@@ -133,7 +135,12 @@ export function setupPage({ blocker, detail } = {}) {
       <li>Click <strong>Storage</strong> in the top row of tabs.</li>
       <li>Click <strong>Create Database</strong>, choose <strong>Neon</strong> (Postgres), and accept the defaults.</li>
       <li>Click <strong>Connect</strong> to attach it to this project.</li>
-      <li>Come back here and <strong>reload the page</strong>.</li>`
+      <li><strong>Now redeploy</strong> — this is the step that is easy to miss.
+        Go to <strong>Deployments</strong>, click the <strong>⋯</strong> menu on the
+        top one, and choose <strong>Redeploy</strong>. A database is only handed to
+        a build that starts <em>after</em> you connect it, so the copy running right
+        now still cannot see yours.</li>
+      <li>When that finishes, come back here and <strong>reload the page</strong>.</li>`
       : `
       <li>This deployment has no way to check who you are, so it will not show anything.</li>
       <li>Either turn on Vercel's own protection for the project, or add the Google sign-in settings.</li>
@@ -142,7 +149,7 @@ export function setupPage({ blocker, detail } = {}) {
   const title = blocker === 'database' ? 'One step left: connect the database' : 'This deployment is not protected yet';
   const lede =
     blocker === 'database'
-      ? 'Everything else is ready. The dashboard needs somewhere to keep what you import, so that it is still there tomorrow and everyone sees the same thing. Adding it takes about four clicks and costs nothing.'
+      ? 'Everything else is ready. The dashboard needs somewhere to keep what you import, so that it is still there tomorrow and everyone sees the same thing. It costs nothing. <strong>If you have already done this and are still seeing this page, it is almost certainly step 5.</strong>'
       : 'Nothing will be shown until sign-in is configured. This is deliberate — the dashboard holds purchase and card data, so it refuses to serve rather than risk being left open.';
 
   return `<!doctype html>

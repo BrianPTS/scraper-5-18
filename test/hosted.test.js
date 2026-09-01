@@ -27,6 +27,7 @@ import {
   readSessionToken,
   signInPage,
 } from '../src/auth.js';
+import { resolveDatabaseUrl } from '../src/database-url.js';
 import { readDeploymentConfig, readDeploymentFile, setupPage } from '../src/deployment.js';
 
 const SAMPLES = join(fileURLToPath(new URL('..', import.meta.url)), 'samples');
@@ -255,7 +256,51 @@ describe('deployment readiness', () => {
     assert.match(page, /Storage/);
     assert.match(page, /Create Database/);
     assert.match(page, /Neon/);
+    // The step people actually get stuck on: connecting a database does not
+    // reach the build that is already running.
+    assert.match(page, /Redeploy/);
     assert.ok(!page.includes('<script'), 'the setup page runs nothing');
+  });
+
+  describe('finding the connection string', () => {
+    test('takes a recognised name at its word', () => {
+      assert.equal(resolveDatabaseUrl({ DATABASE_URL: 'postgres://a' }), 'postgres://a');
+      // Not a URL at all, but the name is an explicit statement of intent —
+      // a local socket path is a legitimate thing to point this at.
+      assert.equal(resolveDatabaseUrl({ DATABASE_URL: '/tmp/pgtest' }), '/tmp/pgtest');
+    });
+
+    test('accepts the names other integrations use', () => {
+      // Connecting a database on Vercel picks the name for you, and which name
+      // depends on the integration. Being told "no database is connected" when
+      // one plainly is would be maddening.
+      assert.equal(resolveDatabaseUrl({ POSTGRES_URL: 'postgres://b' }), 'postgres://b');
+      assert.equal(resolveDatabaseUrl({ NEON_DATABASE_URL: 'postgres://c' }), 'postgres://c');
+    });
+
+    test('prefers the pooled connection when several are set', () => {
+      // A serverless function opens and drops connections constantly; the
+      // direct connection runs Postgres out of them.
+      const env = { DATABASE_URL_UNPOOLED: 'postgres://direct', DATABASE_URL: 'postgres://pooled' };
+      assert.equal(resolveDatabaseUrl(env), 'postgres://pooled');
+    });
+
+    test('finds a connection string under a name nobody predicted', () => {
+      // Integrations let you set a custom prefix. Nothing else in a deployment's
+      // environment looks like a postgres:// URL, so the value gives it away.
+      assert.equal(resolveDatabaseUrl({ ACME_PG: 'postgresql://d' }), 'postgresql://d');
+    });
+
+    test('never guesses its way into the test database', () => {
+      // `npm test` runs with TEST_DATABASE_URL set. Silently pointing the real
+      // app at a throwaway database is the kind of surprise that eats a day.
+      assert.equal(resolveDatabaseUrl({ TEST_DATABASE_URL: 'postgres://scratch' }), undefined);
+    });
+
+    test('an empty environment has no database', () => {
+      assert.equal(resolveDatabaseUrl({}), undefined);
+      assert.equal(resolveDatabaseUrl({ DATABASE_URL: '', PATH: '/usr/bin' }), undefined);
+    });
   });
 
   test('the setup page escapes the detail it is handed', () => {

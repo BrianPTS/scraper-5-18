@@ -16,6 +16,7 @@
 
 import pg from 'pg';
 
+import { resolveDatabaseUrl } from './database-url.js';
 import { DEFAULT_OPTIONS } from './match.js';
 
 const { Pool } = pg;
@@ -23,8 +24,8 @@ const { Pool } = pg;
 /** One pool per process; serverless reuses it across warm invocations. */
 let pool = null;
 
-export function getPool(connectionString = process.env.DATABASE_URL) {
-  if (!connectionString) throw new Error('DATABASE_URL is not set.');
+export function getPool(connectionString = resolveDatabaseUrl()) {
+  if (!connectionString) throw new Error('No Postgres connection string is set (DATABASE_URL or POSTGRES_URL).');
   if (!pool) {
     pool = new Pool({
       connectionString,
@@ -77,7 +78,7 @@ export class PostgresStore {
    * @param {{connectionString?: string, workspace?: string}} [options]
    */
   constructor(options = {}) {
-    this.connectionString = options.connectionString ?? process.env.DATABASE_URL;
+    this.connectionString = options.connectionString ?? resolveDatabaseUrl();
     this.workspace = options.workspace ?? process.env.WORKSPACE ?? 'default';
     this.file = 'postgres';
     this.data = {

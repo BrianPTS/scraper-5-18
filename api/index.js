@@ -58,7 +58,7 @@ export default async function handler(req, res) {
       const detail =
         deployment.blocker === 'auth'
           ? authConfig.reason || 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set'
-          : 'DATABASE_URL is not set — no database is connected to this project';
+          : 'No Postgres connection string in this build’s environment (DATABASE_URL, POSTGRES_URL, or any variable holding a postgres:// URL). Either no database is connected, or this build started before one was.';
 
       if (isApi) return sendJson(res, 503, { error: detail, setup: deployment.blocker });
       res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
