@@ -242,20 +242,23 @@ async function loadDominatedListingsEnabledSet(mappingIds: string[]): Promise<Se
 }
 
 // Rank a row label from front to back based on the label itself.
-//   Numeric ("1" .. "10000")           -> that number
-//   Single letter A-Z (case-insensitive) -> 1 .. 26
+//   Numeric ("1" .. "10000")           -> { kind: 'num', rank: N }
+//   Single letter A-Z (case-insensitive) -> { kind: 'alpha', rank: 1..26 }
 //   Anything else (multi-letter "AA", mixed "12A", empty, etc.) -> null
 // Groups whose row cannot be ranked are NOT considered for domination.
-export function rankRowLabel(row: string | null | undefined): number | null {
+// Kinds are independent universes: letters never compete with numbers.
+export type RowRank = { kind: 'num' | 'alpha'; rank: number };
+
+export function rankRowLabel(row: string | null | undefined): RowRank | null {
   if (row == null) return null;
   const s = String(row).trim();
   if (!s) return null;
   if (/^\d+$/.test(s)) {
     const n = parseInt(s, 10);
-    return Number.isFinite(n) ? n : null;
+    return Number.isFinite(n) ? { kind: 'num', rank: n } : null;
   }
   if (/^[A-Za-z]$/.test(s)) {
-    return s.toUpperCase().charCodeAt(0) - 64; // A=1..Z=26
+    return { kind: 'alpha', rank: s.toUpperCase().charCodeAt(0) - 64 }; // A=1..Z=26
   }
   return null;
 }
@@ -265,18 +268,21 @@ export function rankRowLabel(row: string | null | undefined): number | null {
 //   numeric row: 1 = best, 10000 = worst
 //   single letter: A = best, Z = worst
 //   AA / AAA / mixed labels: ignored — the listing passes through.
-// Within (event_id, section, quantity, custom_split), sort by that rank
-// ascending, then per-seat list_price ascending; drop any record
-// dominated by a lower-rank sibling at <= per-seat price.
+// Within (event_id, section, quantity, custom_split), items split into
+// two independent universes by rank kind — numeric competes only with
+// numeric, letter only with letter — so a numeric row cannot dominate a
+// letter row and vice versa. Each universe is then sorted by rank asc,
+// tie-broken by per-seat list_price asc, and any record whose front-
+// sibling in the same universe is already at <= per-seat price is dropped.
 // Records for events NOT in enabledMappingIds pass through untouched.
-// GA/parking/lawn (no rankable row) also pass through — dominance doesn't apply.
+// GA/parking/lawn (no rankable row) also pass through.
 export function applyDominatedListingsFilter(
   records: CsvRow[],
   enabledMappingIds: Set<string>,
 ): { kept: CsvRow[]; dropped: number } {
   if (enabledMappingIds.size === 0) return { kept: records, dropped: 0 };
 
-  type Bucket = { items: { row: CsvRow; rank: number }[] };
+  type Bucket = { items: { row: CsvRow; rank: RowRank }[] };
   const buckets = new Map<string, Bucket>();
   const passthrough: CsvRow[] = [];
 
@@ -299,21 +305,25 @@ export function applyDominatedListingsFilter(
   const kept: CsvRow[] = [...passthrough];
   let dropped = 0;
   for (const bucket of buckets.values()) {
-    bucket.items.sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      return (a.row.list_price ?? 0) - (b.row.list_price ?? 0);
-    });
-    const survivors: { row: CsvRow }[] = [];
-    for (const item of bucket.items) {
-      const perSeat = item.row.list_price ?? 0;
-      const dominated = survivors.some(s => (s.row.list_price ?? 0) <= perSeat);
-      if (dominated) {
-        dropped++;
-      } else {
-        survivors.push(item);
+    for (const kind of ['num', 'alpha'] as const) {
+      const universe = bucket.items.filter(it => it.rank.kind === kind);
+      if (universe.length === 0) continue;
+      universe.sort((a, b) => {
+        if (a.rank.rank !== b.rank.rank) return a.rank.rank - b.rank.rank;
+        return (a.row.list_price ?? 0) - (b.row.list_price ?? 0);
+      });
+      const survivors: { row: CsvRow }[] = [];
+      for (const item of universe) {
+        const perSeat = item.row.list_price ?? 0;
+        const dominated = survivors.some(s => (s.row.list_price ?? 0) <= perSeat);
+        if (dominated) {
+          dropped++;
+        } else {
+          survivors.push(item);
+        }
       }
+      kept.push(...survivors.map(s => s.row));
     }
-    kept.push(...survivors.map(s => s.row));
   }
   return { kept, dropped };
 }
