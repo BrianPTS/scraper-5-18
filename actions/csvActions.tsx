@@ -252,11 +252,11 @@ async function loadDominatedListingsEnabledSet(mappingIds: string[]): Promise<Se
 // and shares no universe with the label-derived kinds.
 export type RowRank = { kind: 'num' | 'alpha' | 'venue'; rank: number };
 
-// venue map: venue -> section -> rowLabel -> index (front-to-back).
+// event map: eventId -> section -> rowLabel -> index (front-to-back).
 export type VenueRowIndex = Map<string, Map<string, Map<string, number>>>;
 
-function normVenue(v: string | null | undefined): string {
-  return (v || '').trim().toLowerCase();
+function normEvent(v: string | null | undefined): string {
+  return (v || '').trim();
 }
 
 function normSection(s: string | null | undefined): string {
@@ -269,38 +269,38 @@ function normRow(r: string | null | undefined): string {
 
 export function lookupVenueRank(
   index: VenueRowIndex | null | undefined,
-  venue: string | null | undefined,
+  eventId: string | null | undefined,
   section: string | null | undefined,
   row: string | null | undefined,
 ): number | null {
   if (!index) return null;
-  const s = index.get(normVenue(venue))?.get(normSection(section))?.get(normRow(row));
+  const s = index.get(normEvent(eventId))?.get(normSection(section))?.get(normRow(row));
   return typeof s === 'number' ? s : null;
 }
 
-// Bulk-load VenueRowMap docs for the (venue, section) pairs seen in the
-// records. One indexed query per unique venue keeps this cheap even for
-// full-catalog CSV runs. Returns an empty index if none are cached yet;
+// Bulk-load EventRowMap docs for the events referenced in the records.
+// One indexed query keyed on eventId keeps this cheap even for full-
+// catalog CSV runs. Returns an empty index if none are cached yet;
 // the ranker then falls back to label parsing for every row.
 export async function loadVenueRowIndex(records: CsvRow[]): Promise<VenueRowIndex> {
-  const { VenueRowMap } = await import('../models/venueRowMapModel.js');
-  const venues = new Set<string>();
+  const { EventRowMap } = await import('../models/venueRowMapModel.js');
+  const eventIds = new Set<string>();
   for (const r of records) {
-    const v = normVenue(r.venue_name);
-    if (v) venues.add(v);
+    const e = normEvent(r.event_id);
+    if (e) eventIds.add(e);
   }
   const index: VenueRowIndex = new Map();
-  if (venues.size === 0) return index;
-  const docs = await (VenueRowMap as any)
-    .find({ venue: { $in: [...venues] } })
+  if (eventIds.size === 0) return index;
+  const docs = await (EventRowMap as any)
+    .find({ eventId: { $in: [...eventIds] } })
     .lean();
   for (const doc of docs || []) {
-    const vKey = normVenue(doc.venue);
+    const eKey = normEvent(doc.eventId);
     const sKey = normSection(doc.section);
-    let byVenue = index.get(vKey);
-    if (!byVenue) { byVenue = new Map(); index.set(vKey, byVenue); }
-    let byRow = byVenue.get(sKey);
-    if (!byRow) { byRow = new Map(); byVenue.set(sKey, byRow); }
+    let byEvent = index.get(eKey);
+    if (!byEvent) { byEvent = new Map(); index.set(eKey, byEvent); }
+    let byRow = byEvent.get(sKey);
+    if (!byRow) { byRow = new Map(); byEvent.set(sKey, byRow); }
     const rows: string[] = Array.isArray(doc.rows) ? doc.rows : [];
     rows.forEach((rowName, idx) => {
       byRow!.set(normRow(rowName), idx);
@@ -353,7 +353,7 @@ export function applyDominatedListingsFilter(
       passthrough.push(r);
       continue;
     }
-    const venueRank = lookupVenueRank(venueIndex, r.venue_name, r.section, r.row);
+    const venueRank = lookupVenueRank(venueIndex, r.event_id, r.section, r.row);
     const rank: RowRank | null =
       venueRank != null
         ? { kind: 'venue', rank: venueRank }
