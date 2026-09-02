@@ -241,54 +241,79 @@ async function loadDominatedListingsEnabledSet(mappingIds: string[]): Promise<Se
   }
 }
 
+// Rank a row label from front to back based on the label itself.
+//   Numeric ("1" .. "10000")           -> that number
+//   Single letter A-Z (case-insensitive) -> 1 .. 26
+//   Anything else (multi-letter "AA", mixed "12A", empty, etc.) -> null
+// Groups whose row cannot be ranked are NOT considered for domination.
+export function rankRowLabel(row: string | null | undefined): number | null {
+  if (row == null) return null;
+  const s = String(row).trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) {
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (/^[A-Za-z]$/.test(s)) {
+    return s.toUpperCase().charCodeAt(0) - 64; // A=1..Z=26
+  }
+  return null;
+}
+
 // Apply the dominated-listings rule to records for events opted in.
-// Within (event_id, section, quantity, custom_split), sort by rowRank
-// ascending (front-to-back), then per-seat list_price ascending; drop
-// any record dominated by a lower-rank sibling at <= per-seat price.
+// Rank comes directly from the row label (see rankRowLabel):
+//   numeric row: 1 = best, 10000 = worst
+//   single letter: A = best, Z = worst
+//   AA / AAA / mixed labels: ignored — the listing passes through.
+// Within (event_id, section, quantity, custom_split), sort by that rank
+// ascending, then per-seat list_price ascending; drop any record
+// dominated by a lower-rank sibling at <= per-seat price.
 // Records for events NOT in enabledMappingIds pass through untouched.
-// GA/parking/lawn (rowRank == null) also pass through untouched since
-// they share physical location — dominance doesn't apply.
+// GA/parking/lawn (no rankable row) also pass through — dominance doesn't apply.
 export function applyDominatedListingsFilter(
   records: CsvRow[],
   enabledMappingIds: Set<string>,
 ): { kept: CsvRow[]; dropped: number } {
   if (enabledMappingIds.size === 0) return { kept: records, dropped: 0 };
 
-  type Bucket = { key: string; items: CsvRow[] };
+  type Bucket = { items: { row: CsvRow; rank: number }[] };
   const buckets = new Map<string, Bucket>();
   const passthrough: CsvRow[] = [];
 
   for (const r of records) {
-    if (!enabledMappingIds.has(r.event_id) || r.rowRank == null) {
+    if (!enabledMappingIds.has(r.event_id)) {
+      passthrough.push(r);
+      continue;
+    }
+    const rank = rankRowLabel(r.row);
+    if (rank == null) {
       passthrough.push(r);
       continue;
     }
     const bkey = `${r.event_id}|${r.section}|${r.quantity}|${r.custom_split || ''}`;
     let b = buckets.get(bkey);
-    if (!b) { b = { key: bkey, items: [] }; buckets.set(bkey, b); }
-    b.items.push(r);
+    if (!b) { b = { items: [] }; buckets.set(bkey, b); }
+    b.items.push({ row: r, rank });
   }
 
   const kept: CsvRow[] = [...passthrough];
   let dropped = 0;
   for (const bucket of buckets.values()) {
     bucket.items.sort((a, b) => {
-      const ra = a.rowRank ?? Number.MAX_SAFE_INTEGER;
-      const rb = b.rowRank ?? Number.MAX_SAFE_INTEGER;
-      if (ra !== rb) return ra - rb;
-      return (a.list_price ?? 0) - (b.list_price ?? 0);
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return (a.row.list_price ?? 0) - (b.row.list_price ?? 0);
     });
-    const survivors: CsvRow[] = [];
+    const survivors: { row: CsvRow }[] = [];
     for (const item of bucket.items) {
-      const perSeat = item.list_price ?? 0;
-      const dominated = survivors.some(s => (s.list_price ?? 0) <= perSeat);
+      const perSeat = item.row.list_price ?? 0;
+      const dominated = survivors.some(s => (s.row.list_price ?? 0) <= perSeat);
       if (dominated) {
         dropped++;
       } else {
         survivors.push(item);
       }
     }
-    kept.push(...survivors);
+    kept.push(...survivors.map(s => s.row));
   }
   return { kept, dropped };
 }
