@@ -247,7 +247,67 @@ async function loadDominatedListingsEnabledSet(mappingIds: string[]): Promise<Se
 //   Anything else (multi-letter "AA", mixed "12A", empty, etc.) -> null
 // Groups whose row cannot be ranked are NOT considered for domination.
 // Kinds are independent universes: letters never compete with numbers.
-export type RowRank = { kind: 'num' | 'alpha'; rank: number };
+// A third kind 'venue' is produced when the VenueRowMap cache resolves
+// this row's true index — that ranking is authoritative for the section
+// and shares no universe with the label-derived kinds.
+export type RowRank = { kind: 'num' | 'alpha' | 'venue'; rank: number };
+
+// venue map: venue -> section -> rowLabel -> index (front-to-back).
+export type VenueRowIndex = Map<string, Map<string, Map<string, number>>>;
+
+function normVenue(v: string | null | undefined): string {
+  return (v || '').trim().toLowerCase();
+}
+
+function normSection(s: string | null | undefined): string {
+  return (s || '').trim().toUpperCase();
+}
+
+function normRow(r: string | null | undefined): string {
+  return (r || '').trim().toUpperCase();
+}
+
+export function lookupVenueRank(
+  index: VenueRowIndex | null | undefined,
+  venue: string | null | undefined,
+  section: string | null | undefined,
+  row: string | null | undefined,
+): number | null {
+  if (!index) return null;
+  const s = index.get(normVenue(venue))?.get(normSection(section))?.get(normRow(row));
+  return typeof s === 'number' ? s : null;
+}
+
+// Bulk-load VenueRowMap docs for the (venue, section) pairs seen in the
+// records. One indexed query per unique venue keeps this cheap even for
+// full-catalog CSV runs. Returns an empty index if none are cached yet;
+// the ranker then falls back to label parsing for every row.
+export async function loadVenueRowIndex(records: CsvRow[]): Promise<VenueRowIndex> {
+  const { VenueRowMap } = await import('../models/venueRowMapModel.js');
+  const venues = new Set<string>();
+  for (const r of records) {
+    const v = normVenue(r.venue_name);
+    if (v) venues.add(v);
+  }
+  const index: VenueRowIndex = new Map();
+  if (venues.size === 0) return index;
+  const docs = await (VenueRowMap as any)
+    .find({ venue: { $in: [...venues] } })
+    .lean();
+  for (const doc of docs || []) {
+    const vKey = normVenue(doc.venue);
+    const sKey = normSection(doc.section);
+    let byVenue = index.get(vKey);
+    if (!byVenue) { byVenue = new Map(); index.set(vKey, byVenue); }
+    let byRow = byVenue.get(sKey);
+    if (!byRow) { byRow = new Map(); byVenue.set(sKey, byRow); }
+    const rows: string[] = Array.isArray(doc.rows) ? doc.rows : [];
+    rows.forEach((rowName, idx) => {
+      byRow!.set(normRow(rowName), idx);
+    });
+  }
+  return index;
+}
 
 export function rankRowLabel(row: string | null | undefined): RowRank | null {
   if (row == null) return null;
@@ -264,21 +324,23 @@ export function rankRowLabel(row: string | null | undefined): RowRank | null {
 }
 
 // Apply the dominated-listings rule to records for events opted in.
-// Rank comes directly from the row label (see rankRowLabel):
-//   numeric row: 1 = best, 10000 = worst
-//   single letter: A = best, Z = worst
-//   AA / AAA / mixed labels: ignored — the listing passes through.
+// Rank priority per record:
+//   1. VenueRowMap cache lookup (kind='venue') — authoritative TM order.
+//   2. Numeric row label (kind='num') — 1 = best, 10000 = worst.
+//   3. Single-letter row label (kind='alpha') — A = best, Z = worst.
+//   Otherwise (AA / AAA / mixed / blank): the listing passes through.
 // Within (event_id, section, quantity, custom_split), items split into
-// two independent universes by rank kind — numeric competes only with
-// numeric, letter only with letter — so a numeric row cannot dominate a
-// letter row and vice versa. Each universe is then sorted by rank asc,
-// tie-broken by per-seat list_price asc, and any record whose front-
-// sibling in the same universe is already at <= per-seat price is dropped.
+// independent universes by rank kind — 'venue' rows never dominate
+// 'num' or 'alpha' rows and vice versa. Each universe is then sorted
+// by rank asc, tie-broken by per-seat list_price asc, and any record
+// whose front-sibling in the same universe is already at <= per-seat
+// price is dropped.
 // Records for events NOT in enabledMappingIds pass through untouched.
 // GA/parking/lawn (no rankable row) also pass through.
 export function applyDominatedListingsFilter(
   records: CsvRow[],
   enabledMappingIds: Set<string>,
+  venueIndex: VenueRowIndex | null = null,
 ): { kept: CsvRow[]; dropped: number } {
   if (enabledMappingIds.size === 0) return { kept: records, dropped: 0 };
 
@@ -291,7 +353,11 @@ export function applyDominatedListingsFilter(
       passthrough.push(r);
       continue;
     }
-    const rank = rankRowLabel(r.row);
+    const venueRank = lookupVenueRank(venueIndex, r.venue_name, r.section, r.row);
+    const rank: RowRank | null =
+      venueRank != null
+        ? { kind: 'venue', rank: venueRank }
+        : rankRowLabel(r.row);
     if (rank == null) {
       passthrough.push(r);
       continue;
@@ -305,7 +371,7 @@ export function applyDominatedListingsFilter(
   const kept: CsvRow[] = [...passthrough];
   let dropped = 0;
   for (const bucket of buckets.values()) {
-    for (const kind of ['num', 'alpha'] as const) {
+    for (const kind of ['venue', 'num', 'alpha'] as const) {
       const universe = bucket.items.filter(it => it.rank.kind === kind);
       if (universe.length === 0) continue;
       universe.sort((a, b) => {
@@ -726,10 +792,11 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
       const dominatedEnabled = await loadDominatedListingsEnabledSet(eventMappingIds);
       if (dominatedEnabled.size > 0) {
         const beforeDom = filteredRecords.length;
-        const { kept, dropped } = applyDominatedListingsFilter(filteredRecords, dominatedEnabled);
+        const venueIndex = await loadVenueRowIndex(filteredRecords);
+        const { kept, dropped } = applyDominatedListingsFilter(filteredRecords, dominatedEnabled, venueIndex);
         filteredRecords = kept;
         excludedCount += dropped;
-        console.log(`[CSV] Dominated-listings filter: ${dominatedEnabled.size} events opted in, removed ${dropped} of ${beforeDom} listings`);
+        console.log(`[CSV] Dominated-listings filter: ${dominatedEnabled.size} events opted in, removed ${dropped} of ${beforeDom} listings (venue-map: ${venueIndex.size} venues cached)`);
       }
 
       console.log(`[CSV] Done: ${filteredRecords.length} kept / ${producedCount} produced / ${excludedCount} excluded (processed ${processedCount} docs in ${Date.now() - startTime}ms)`);

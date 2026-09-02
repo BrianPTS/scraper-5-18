@@ -8,3 +8,4 @@ export { FeatureFlags } from "./featureFlagModel.js";
 export { Alert } from "./alertModel.js";
 export { InventorySnapshot } from "./inventorySnapshotModel.js";
 export { WatchlistRule } from "./watchlistRuleModel.js";
+export { VenueRowMap } from "./venueRowMapModel.js";
