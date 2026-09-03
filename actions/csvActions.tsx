@@ -369,6 +369,183 @@ export function applyCoverListingsExpansion(
   return { records: out, added };
 }
 
+// Load the per-event "combined-listings" enable set.
+async function loadCombinedListingsEnabledSet(mappingIds: string[]): Promise<Set<string>> {
+  if (mappingIds.length === 0) return new Set();
+  try {
+    const events = await Event.find(
+      { mapping_id: { $in: mappingIds } },
+      { _id: 1, mapping_id: 1 }
+    ).lean();
+    if (events.length === 0) return new Set();
+
+    const objectIdToMappingId = new Map<string, string>();
+    const eventIds: string[] = [];
+    for (const e of events as Array<{ _id: unknown; mapping_id: string }>) {
+      const oid = String(e._id);
+      objectIdToMappingId.set(oid, e.mapping_id);
+      eventIds.push(oid);
+    }
+
+    const rules = await ExclusionRules.find(
+      { eventId: { $in: eventIds }, isActive: true, 'combinedListings.enabled': true },
+      { eventId: 1 }
+    ).lean();
+
+    const enabled = new Set<string>();
+    for (const rule of rules as Array<{ eventId: string }>) {
+      const mid = objectIdToMappingId.get(String(rule.eventId));
+      if (mid) enabled.add(mid);
+    }
+    return enabled;
+  } catch (error) {
+    console.error('Error loading combined-listings enable set:', error);
+    return new Set();
+  }
+}
+
+const COMBINED_MAX_SEATS = 8;
+const COMBINED_FACE_PREMIUM = 0.15; // 15% over face
+
+// Parse the comma-separated seat string on a CsvRow into a sorted array
+// of integer seat numbers. Non-numeric tokens are skipped. Returns []
+// if nothing parses — that row is then ineligible for combining.
+export function parseSeatNumbers(seats: string | null | undefined): number[] {
+  if (!seats) return [];
+  const out: number[] = [];
+  for (const tok of String(seats).split(',')) {
+    const n = parseInt(tok.trim(), 10);
+    if (Number.isFinite(n)) out.push(n);
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+// A listing is contiguous in its own seat numbers if seats form an
+// unbroken run (seat[i+1] == seat[i]+1 for all i). Non-contiguous
+// listings (e.g. "3,5,7") are ineligible — the seats themselves have
+// gaps so combining them with neighbors would be meaningless.
+function isOwnRunContiguous(seats: number[]): boolean {
+  for (let i = 1; i < seats.length; i++) if (seats[i] !== seats[i - 1] + 1) return false;
+  return true;
+}
+
+// Deterministic combined inventory_id derived from the sorted component
+// ids joined + hashed to a compact numeric-ish string. Stable across
+// scrapes: same components → same id, so Automatiq updates in place.
+// Format: "<hash>8<combinedQty:02d>" — the "8" separator marks these
+// as combined-listing ids (covers use "9" separator).
+export function deterministicCombinedId(componentIds: string[], combinedQty: number): string {
+  const sorted = [...componentIds].sort();
+  // FNV-1a 32-bit, plenty of range for our id count and no crypto import.
+  let h = 2166136261 >>> 0;
+  const joined = sorted.join('|');
+  for (let i = 0; i < joined.length; i++) {
+    h ^= joined.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const hashStr = (h >>> 0).toString(10).padStart(10, '0');
+  return `${hashStr}8${String(combinedQty).padStart(2, '0')}`;
+}
+
+// Build the synthetic combined listing for a run of contiguous components.
+// Priced at (Σ qty_i × face_price_i) × 1.15 / combined_qty so a single
+// sale of the bundle recoups every component's face + 15% premium.
+// custom_split is set to combinedQty (unsplittable), which then makes
+// the synthetic itself eligible for cover-listings if that's enabled.
+function buildCombinedFromComponents(components: CsvRow[]): CsvRow | null {
+  if (components.length < 2) return null;
+  const combinedQty = components.reduce((s, c) => s + Number(c.quantity || 0), 0);
+  if (combinedQty < 2 || combinedQty > COMBINED_MAX_SEATS) return null;
+  let totalFace = 0;
+  const seatNums: number[] = [];
+  const ids: string[] = [];
+  for (const c of components) {
+    const q = Number(c.quantity || 0);
+    const fp = Number(c.face_price || 0);
+    if (!Number.isFinite(fp) || fp <= 0) return null;
+    totalFace += q * fp;
+    for (const s of parseSeatNumbers(c.seats)) seatNums.push(s);
+    ids.push(String(c.inventory_id));
+  }
+  seatNums.sort((a, b) => a - b);
+  const listPrice = Math.round((totalFace * (1 + COMBINED_FACE_PREMIUM) / combinedQty) * 100) / 100;
+  const base = components[0];
+  return {
+    ...base,
+    inventory_id: deterministicCombinedId(ids, combinedQty) as unknown as CsvRow['inventory_id'],
+    quantity: combinedQty,
+    seats: seatNums.join(','),
+    custom_split: String(combinedQty),
+    split_type: 'CUSTOM',
+    list_price: listPrice,
+    face_price: Math.round((totalFace / combinedQty) * 100) / 100,
+  };
+}
+
+// Enumerate every contiguous k-way sub-run (k >= 2) of the given
+// listings, capped so combinedQty <= COMBINED_MAX_SEATS. Input must be
+// pre-sorted by min seat number. A pair (i, i+1) is adjacent when the
+// max seat of i is exactly one less than the min seat of i+1. From
+// there we grow the run rightward while it stays adjacent AND under
+// the seat cap.
+function enumerateContiguousRuns(sorted: { row: CsvRow; seats: number[] }[]): CsvRow[][] {
+  const runs: CsvRow[][] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let combinedQty = sorted[i].seats.length;
+    let lastMax = sorted[i].seats[sorted[i].seats.length - 1];
+    for (let j = i + 1; j < sorted.length; j++) {
+      const cand = sorted[j];
+      if (cand.seats[0] !== lastMax + 1) break; // gap → run ends here
+      combinedQty += cand.seats.length;
+      if (combinedQty > COMBINED_MAX_SEATS) break; // over cap → stop
+      lastMax = cand.seats[cand.seats.length - 1];
+      const componentRows = sorted.slice(i, j + 1).map((s) => s.row);
+      runs.push(componentRows);
+    }
+  }
+  return runs;
+}
+
+// Apply combined-listings expansion to records. Groups eligible records
+// by (event_id, section, row), sorts each group by min seat number,
+// enumerates contiguous sub-runs of 2+, and appends a synthetic
+// combined listing per run. Originals stay in place unchanged.
+export function applyCombinedListingsExpansion(
+  records: CsvRow[],
+  enabledMappingIds: Set<string>,
+): { records: CsvRow[]; added: number } {
+  if (enabledMappingIds.size === 0) return { records, added: 0 };
+  type Item = { row: CsvRow; seats: number[] };
+  const groups = new Map<string, Item[]>();
+  for (const r of records) {
+    if (!enabledMappingIds.has(r.event_id)) continue;
+    const seats = parseSeatNumbers(r.seats);
+    if (seats.length === 0 || !isOwnRunContiguous(seats)) continue;
+    const key = `${r.event_id}|${r.section}|${r.row}`;
+    let arr = groups.get(key);
+    if (!arr) { arr = []; groups.set(key, arr); }
+    arr.push({ row: r, seats });
+  }
+
+  const out: CsvRow[] = [...records];
+  let added = 0;
+  const emitted = new Set<string>();
+  for (const items of groups.values()) {
+    items.sort((a, b) => a.seats[0] - b.seats[0]);
+    for (const run of enumerateContiguousRuns(items)) {
+      const synth = buildCombinedFromComponents(run);
+      if (!synth) continue;
+      const idKey = String(synth.inventory_id);
+      if (emitted.has(idKey)) continue;
+      emitted.add(idKey);
+      out.push(synth);
+      added++;
+    }
+  }
+  return { records: out, added };
+}
+
 // Rank a row label from front to back based on the label itself.
 //   Numeric ("1" .. "10000")           -> { kind: 'num', rank: N }
 //   Single letter A-Z (case-insensitive) -> { kind: 'alpha', rank: 1..26 }
@@ -927,6 +1104,22 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
         console.log(`[CSV] Dominated-listings filter: ${dominatedEnabled.size} events opted in, removed ${dropped} of ${beforeDom} listings (venue-map: ${venueIndex.size} venues cached)`);
       }
 
+      // Combined-listings expansion: fires for events opted in via
+      // ExclusionRules.combinedListings.enabled=true. Within (event,
+      // section, row), for every contiguous seat run of 2+ listings,
+      // appends a synthetic bundle listing priced at face × 1.15 /
+      // combined_qty. Synthetic ids are derived from the sorted
+      // component ids, so any component change on the next scrape drops
+      // the synthetic. Runs before cover-listings so a synthetic bundle
+      // can then be cover-expanded.
+      const combinedEnabled = await loadCombinedListingsEnabledSet(eventMappingIds);
+      if (combinedEnabled.size > 0) {
+        const beforeCmb = filteredRecords.length;
+        const { records: withCombined, added } = applyCombinedListingsExpansion(filteredRecords, combinedEnabled);
+        filteredRecords = withCombined;
+        console.log(`[CSV] Combined-listings expansion: ${combinedEnabled.size} events opted in, added ${added} synthetic bundles to ${beforeCmb} originals`);
+      }
+
       // Cover-listings expansion: fires for events opted in via
       // ExclusionRules.coverListings.enabled=true. For every unsplittable
       // pack with cost data, appends sibling listings at each cover size
@@ -1392,6 +1585,10 @@ export async function* generateInventoryCsvStream(
     const coverEnabledStreaming = await loadCoverListingsEnabledSet(eventMappingIds);
     if (coverEnabledStreaming.size > 0) {
       console.warn(`[CSV stream] cover-listings enabled on ${coverEnabledStreaming.size} event(s) but streaming path bypasses this rule. Use non-streaming CSV to apply it.`);
+    }
+    const combinedEnabledStreaming = await loadCombinedListingsEnabledSet(eventMappingIds);
+    if (combinedEnabledStreaming.size > 0) {
+      console.warn(`[CSV stream] combined-listings enabled on ${combinedEnabledStreaming.size} event(s) but streaming path bypasses this rule. Use non-streaming CSV to apply it.`);
     }
 
     const CHUNK_SIZE = 10000;

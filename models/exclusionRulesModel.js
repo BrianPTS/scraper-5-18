@@ -45,6 +45,16 @@ const exclusionRulesSchema = new mongoose.Schema({
   coverListings: {
     enabled: { type: Boolean, default: false },
   },
+  // Combined-listings rule: within (event, section, row), for every
+  // contiguous run of 2+ listings whose seat numbers touch with no gap,
+  // emit synthetic listings that concatenate the components (every k-way
+  // sub-run capped at 8 seats). Originals stay unchanged. Synthetic id
+  // is derived from the sorted component ids, so any component change on
+  // the next scrape vanishes the synthetic. Priced at total component
+  // face × 1.15 / combined_qty so a single sale recoups every face + 15%.
+  combinedListings: {
+    enabled: { type: Boolean, default: false },
+  },
   isActive: {
     type: Boolean,
     default: true
