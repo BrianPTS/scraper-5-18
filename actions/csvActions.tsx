@@ -547,15 +547,18 @@ export function applyCombinedListingsExpansion(
 }
 
 // Rank a row label from front to back based on the label itself.
-//   Numeric ("1" .. "10000")           -> { kind: 'num', rank: N }
-//   Single letter A-Z (case-insensitive) -> { kind: 'alpha', rank: 1..26 }
-//   Anything else (multi-letter "AA", mixed "12A", empty, etc.) -> null
+//   Numeric ("1" .. "10000")              -> { kind: 'num',    rank: N }
+//   Single letter A-Z (case-insensitive)  -> { kind: 'alpha',  rank: 1..26 }
+//   Double letter AA-ZZ (case-insensitive)-> { kind: 'alpha2', rank: 1..676 }
+//   Triple letter AAA-ZZZ                 -> { kind: 'alpha3', rank: 1..17576 }
+//   Anything else (mixed "12A", empty, etc.) -> null
 // Groups whose row cannot be ranked are NOT considered for domination.
-// Kinds are independent universes: letters never compete with numbers.
-// A third kind 'venue' is produced when the VenueRowMap cache resolves
+// Kinds are independent universes: letters never compete with numbers,
+// AA never competes with A, AAA never competes with AA.
+// A fifth kind 'venue' is produced when the VenueRowMap cache resolves
 // this row's true index — that ranking is authoritative for the section
 // and shares no universe with the label-derived kinds.
-export type RowRank = { kind: 'num' | 'alpha' | 'venue'; rank: number };
+export type RowRank = { kind: 'num' | 'alpha' | 'alpha2' | 'alpha3' | 'venue'; rank: number };
 
 // event map: eventId -> section -> rowLabel -> index (front-to-back).
 export type VenueRowIndex = Map<string, Map<string, Map<string, number>>>;
@@ -625,6 +628,19 @@ export function rankRowLabel(row: string | null | undefined): RowRank | null {
   if (/^[A-Za-z]$/.test(s)) {
     return { kind: 'alpha', rank: s.toUpperCase().charCodeAt(0) - 64 }; // A=1..Z=26
   }
+  if (/^[A-Za-z]{2}$/.test(s)) {
+    // AA=1, AB=2, ..., AZ=26, BA=27, ..., ZZ=676
+    const u = s.toUpperCase();
+    return { kind: 'alpha2', rank: (u.charCodeAt(0) - 65) * 26 + (u.charCodeAt(1) - 64) };
+  }
+  if (/^[A-Za-z]{3}$/.test(s)) {
+    // AAA=1, AAB=2, ..., ZZZ=17576
+    const u = s.toUpperCase();
+    return {
+      kind: 'alpha3',
+      rank: (u.charCodeAt(0) - 65) * 676 + (u.charCodeAt(1) - 65) * 26 + (u.charCodeAt(2) - 64),
+    };
+  }
   return null;
 }
 
@@ -676,7 +692,7 @@ export function applyDominatedListingsFilter(
   const kept: CsvRow[] = [...passthrough];
   let dropped = 0;
   for (const bucket of buckets.values()) {
-    for (const kind of ['venue', 'num', 'alpha'] as const) {
+    for (const kind of ['venue', 'num', 'alpha', 'alpha2', 'alpha3'] as const) {
       const universe = bucket.items.filter(it => it.rank.kind === kind);
       if (universe.length === 0) continue;
       universe.sort((a, b) => {
