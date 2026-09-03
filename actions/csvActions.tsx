@@ -637,7 +637,7 @@ export function rankRowLabel(row: string | null | undefined): RowRank | null {
 // Within (event_id, section, quantity, custom_split), items split into
 // independent universes by rank kind — 'venue' rows never dominate
 // 'num' or 'alpha' rows and vice versa. Each universe is then sorted
-// by rank asc, tie-broken by per-seat list_price asc, and any record
+// by rank asc, tie-broken by per-seat face_price asc, and any record
 // whose front-sibling in the same universe is already at <= per-seat
 // price is dropped.
 // Records for events NOT in enabledMappingIds pass through untouched.
@@ -681,12 +681,12 @@ export function applyDominatedListingsFilter(
       if (universe.length === 0) continue;
       universe.sort((a, b) => {
         if (a.rank.rank !== b.rank.rank) return a.rank.rank - b.rank.rank;
-        return (a.row.list_price ?? 0) - (b.row.list_price ?? 0);
+        return (a.row.face_price ?? 0) - (b.row.face_price ?? 0);
       });
       const survivors: { row: CsvRow }[] = [];
       for (const item of universe) {
-        const perSeat = item.row.list_price ?? 0;
-        const dominated = survivors.some(s => (s.row.list_price ?? 0) <= perSeat);
+        const perSeat = item.row.face_price ?? 0;
+        const dominated = survivors.some(s => (s.row.face_price ?? 0) <= perSeat);
         if (dominated) {
           dropped++;
         } else {
