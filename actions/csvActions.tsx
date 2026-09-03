@@ -241,6 +241,134 @@ async function loadDominatedListingsEnabledSet(mappingIds: string[]): Promise<Se
   }
 }
 
+// Load the per-event "cover-listings" enable set. Same shape as
+// loadDominatedListingsEnabledSet but keyed on coverListings.enabled.
+async function loadCoverListingsEnabledSet(mappingIds: string[]): Promise<Set<string>> {
+  if (mappingIds.length === 0) return new Set();
+  try {
+    const events = await Event.find(
+      { mapping_id: { $in: mappingIds } },
+      { _id: 1, mapping_id: 1 }
+    ).lean();
+    if (events.length === 0) return new Set();
+
+    const objectIdToMappingId = new Map<string, string>();
+    const eventIds: string[] = [];
+    for (const e of events as Array<{ _id: unknown; mapping_id: string }>) {
+      const oid = String(e._id);
+      objectIdToMappingId.set(oid, e.mapping_id);
+      eventIds.push(oid);
+    }
+
+    const rules = await ExclusionRules.find(
+      { eventId: { $in: eventIds }, isActive: true, 'coverListings.enabled': true },
+      { eventId: 1 }
+    ).lean();
+
+    const enabled = new Set<string>();
+    for (const rule of rules as Array<{ eventId: string }>) {
+      const mid = objectIdToMappingId.get(String(rule.eventId));
+      if (mid) enabled.add(mid);
+    }
+    return enabled;
+  } catch (error) {
+    console.error('Error loading cover-listings enable set:', error);
+    return new Set();
+  }
+}
+
+// Cover sizes emitted for a pack of quantity Q. The rule keeps the
+// orphan count (Q - cover) even and >= 2 — we never emit a cover that
+// would leave a single dangling seat behind, and we never emit the
+// parent size itself. Equivalently: cover has the same parity as Q,
+// and 2 <= cover <= Q - 2.
+//   Q=4  → [2]              (leaves 2)
+//   Q=5  → [3]              (leaves 2)
+//   Q=6  → [2, 4]           (leaves 4 or 2)
+//   Q=7  → [3, 5]           (leaves 4 or 2)
+//   Q=8  → [2, 4, 6]        (leaves 6/4/2)
+//   Q=13 → [3, 5, 7, 9, 11] (leaves 10/8/6/4/2)
+export function coverSizesFor(q: number): number[] {
+  if (!Number.isFinite(q) || q < 4) return [];
+  const out: number[] = [];
+  const startParity = q % 2; // 0 for even Q, 1 for odd Q
+  for (let k = 2 + (startParity === 0 ? 0 : 1); k <= q - 2; k += 2) out.push(k);
+  return out;
+}
+
+// Take a parent CsvRow that is unsplittable (custom_split === String(quantity))
+// and has cost data, and expand it into an array of sibling cover
+// listings. Each sibling shares the same physical seats, section, row,
+// tags, etc.; the diffs are quantity (the cover size), custom_split
+// (String(coverSize)), inventory_id (deterministic parent-derived),
+// list_price (priced so a single sale of coverSize fully covers the
+// pack's total cost). Returns [] if the row isn't eligible.
+export function buildCoverSiblings(parent: CsvRow): CsvRow[] {
+  const q = Number(parent.quantity);
+  if (!Number.isFinite(q) || q < 4) return [];
+  // Only expand when the pack is genuinely unsplittable — custom_split
+  // exactly equals the full quantity as a single value. Anything else
+  // (already-split packs, missing custom_split, other split_type) is
+  // left alone so we never override human intent.
+  const split = (parent.custom_split ?? '').trim();
+  if (split !== String(q)) return [];
+  const perSeatCost = Number(parent.cost);
+  if (!Number.isFinite(perSeatCost) || perSeatCost <= 0) return [];
+  const sizes = coverSizesFor(q);
+  if (sizes.length === 0) return [];
+  const totalCost = perSeatCost * q;
+  const parentIdStr = String(parent.inventory_id);
+  const siblings: CsvRow[] = [];
+  for (const size of sizes) {
+    const listPrice = Math.round((totalCost / size) * 100) / 100;
+    const covId = deterministicCoverId(parentIdStr, size);
+    siblings.push({
+      ...parent,
+      inventory_id: covId as unknown as CsvRow['inventory_id'],
+      quantity: size,
+      custom_split: String(size),
+      split_type: 'CUSTOM',
+      list_price: listPrice,
+    });
+  }
+  return siblings;
+}
+
+// Cover inventory_id derived from the parent id so it stays stable
+// across scrapes — Automatiq treats a stable id as an in-place update
+// rather than a fresh listing. Format: <parent>9<coverSize padded>.
+// Parent inventory_ids are already numeric (10-digit generated); a
+// suffix chunk keeps the value integer-typed for downstream systems
+// that require it.
+export function deterministicCoverId(parentId: string, coverSize: number): string {
+  const suffix = String(coverSize).padStart(2, '0');
+  return `${parentId}9${suffix}`;
+}
+
+// Apply cover-listings expansion to records. For every eligible parent
+// in the input, appends its cover siblings (parent stays in the output
+// unchanged). Records for events not in enabledMappingIds pass through
+// untouched. Returns { records, added } so callers can log/track the
+// number of siblings introduced.
+export function applyCoverListingsExpansion(
+  records: CsvRow[],
+  enabledMappingIds: Set<string>,
+): { records: CsvRow[]; added: number } {
+  if (enabledMappingIds.size === 0) return { records, added: 0 };
+  const out: CsvRow[] = [];
+  let added = 0;
+  for (const r of records) {
+    out.push(r);
+    if (!enabledMappingIds.has(r.event_id)) continue;
+    const siblings = buildCoverSiblings(r);
+    if (siblings.length > 0) {
+      out.push(...siblings);
+      added += siblings.length;
+    }
+  }
+  return { records: out, added };
+}
+
 // Rank a row label from front to back based on the label itself.
 //   Numeric ("1" .. "10000")           -> { kind: 'num', rank: N }
 //   Single letter A-Z (case-insensitive) -> { kind: 'alpha', rank: 1..26 }
@@ -799,6 +927,21 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
         console.log(`[CSV] Dominated-listings filter: ${dominatedEnabled.size} events opted in, removed ${dropped} of ${beforeDom} listings (venue-map: ${venueIndex.size} venues cached)`);
       }
 
+      // Cover-listings expansion: fires for events opted in via
+      // ExclusionRules.coverListings.enabled=true. For every unsplittable
+      // pack with cost data, appends sibling listings at each cover size
+      // priced to cover the pack's total cost from a single partial sale.
+      // Cover ids are derived from the parent id, so any change to the
+      // parent seat set drops both from the next scrape → Automatiq
+      // treats the missing rows as sold and delists them together.
+      const coverEnabled = await loadCoverListingsEnabledSet(eventMappingIds);
+      if (coverEnabled.size > 0) {
+        const beforeCov = filteredRecords.length;
+        const { records: expanded, added } = applyCoverListingsExpansion(filteredRecords, coverEnabled);
+        filteredRecords = expanded;
+        console.log(`[CSV] Cover-listings expansion: ${coverEnabled.size} events opted in, added ${added} sibling listings to ${beforeCov} parents`);
+      }
+
       console.log(`[CSV] Done: ${filteredRecords.length} kept / ${producedCount} produced / ${excludedCount} excluded (processed ${processedCount} docs in ${Date.now() - startTime}ms)`);
 
       if (filteredRecords.length === 0) {
@@ -1245,6 +1388,10 @@ export async function* generateInventoryCsvStream(
     const dominatedEnabledStreaming = await loadDominatedListingsEnabledSet(eventMappingIds);
     if (dominatedEnabledStreaming.size > 0) {
       console.warn(`[CSV stream] dominated-listings enabled on ${dominatedEnabledStreaming.size} event(s) but streaming path bypasses this rule. Use non-streaming CSV to apply it.`);
+    }
+    const coverEnabledStreaming = await loadCoverListingsEnabledSet(eventMappingIds);
+    if (coverEnabledStreaming.size > 0) {
+      console.warn(`[CSV stream] cover-listings enabled on ${coverEnabledStreaming.size} event(s) but streaming path bypasses this rule. Use non-streaming CSV to apply it.`);
     }
 
     const CHUNK_SIZE = 10000;

@@ -35,6 +35,16 @@ const exclusionRulesSchema = new mongoose.Schema({
   dominatedListings: {
     enabled: { type: Boolean, default: false },
   },
+  // Cover-listings rule: for each unsplittable pack (custom_split == quantity)
+  // with cost data, emit sibling inventory_ids at each smaller cover size,
+  // priced so a single sale of that size fully covers the pack's total
+  // cost. Parent and siblings share the same physical seats — Automatiq
+  // treats the CSV as authoritative, so when the parent's seats disappear
+  // in the next scrape, all siblings vanish with it. When enabled, runs
+  // after all other filters at CSV-emit time.
+  coverListings: {
+    enabled: { type: Boolean, default: false },
+  },
   isActive: {
     type: Boolean,
     default: true
