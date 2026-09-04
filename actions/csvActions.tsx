@@ -547,11 +547,16 @@ export function applyCombinedListingsExpansion(
 }
 
 // Rank a row label from front to back based on the label itself.
-//   Numeric ("1" .. "10000")              -> { kind: 'num',    rank: N }
-//   Single letter A-Z (case-insensitive)  -> { kind: 'alpha',  rank: 1..26 }
-//   Double letter AA-ZZ (case-insensitive)-> { kind: 'alpha2', rank: 1..676 }
-//   Triple letter AAA-ZZZ                 -> { kind: 'alpha3', rank: 1..17576 }
-//   Anything else (mixed "12A", empty, etc.) -> null
+//   Numeric ("1" .. "10000")                    -> { kind: 'num',    rank: N }
+//   Single letter A-Z (case-insensitive)        -> { kind: 'alpha',  rank: 1..26 }
+//   Same-letter double AA/BB/…/ZZ (case-insens) -> { kind: 'alpha2', rank: 1..26 }
+//   Same-letter triple AAA/BBB/…/ZZZ            -> { kind: 'alpha3', rank: 1..26 }
+//   Anything else (mixed "12A", "AB", "WC",
+//     "ADA", "SRO", empty, etc.)                -> null
+// Mixed multi-letter labels are venue seat-type codes (WC, ADA, SRO,
+// TBL, etc.), NOT row positions — they pass through and are always
+// kept. Same-letter doubles/triples are the real "row AA / row BB"
+// venue naming convention.
 // Groups whose row cannot be ranked are NOT considered for domination.
 // Kinds are independent universes: letters never compete with numbers,
 // AA never competes with A, AAA never competes with AA.
@@ -628,18 +633,15 @@ export function rankRowLabel(row: string | null | undefined): RowRank | null {
   if (/^[A-Za-z]$/.test(s)) {
     return { kind: 'alpha', rank: s.toUpperCase().charCodeAt(0) - 64 }; // A=1..Z=26
   }
-  if (/^[A-Za-z]{2}$/.test(s)) {
-    // AA=1, AB=2, ..., AZ=26, BA=27, ..., ZZ=676
-    const u = s.toUpperCase();
-    return { kind: 'alpha2', rank: (u.charCodeAt(0) - 65) * 26 + (u.charCodeAt(1) - 64) };
+  if (/^([A-Za-z])\1$/.test(s)) {
+    // Same-letter double: AA=1, BB=2, ..., ZZ=26. Mixed doubles like
+    // "AB" or "WC" are seat-type codes — passthrough.
+    return { kind: 'alpha2', rank: s.toUpperCase().charCodeAt(0) - 64 };
   }
-  if (/^[A-Za-z]{3}$/.test(s)) {
-    // AAA=1, AAB=2, ..., ZZZ=17576
-    const u = s.toUpperCase();
-    return {
-      kind: 'alpha3',
-      rank: (u.charCodeAt(0) - 65) * 676 + (u.charCodeAt(1) - 65) * 26 + (u.charCodeAt(2) - 64),
-    };
+  if (/^([A-Za-z])\1\1$/.test(s)) {
+    // Same-letter triple: AAA=1, BBB=2, ..., ZZZ=26. Mixed triples like
+    // "ADA" or "SRO" are seat-type codes — passthrough.
+    return { kind: 'alpha3', rank: s.toUpperCase().charCodeAt(0) - 64 };
   }
   return null;
 }
