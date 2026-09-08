@@ -38,6 +38,7 @@ import { deleteExpiredEvents, getExpiredEventsStats, deletePassedEvents } from '
 import { deleteConsecutiveGroupsByEventIds } from './seatActions';
 import { detectTimezoneFromVenueAsync, resolveVenueTimezonesBulk, getCurrentTimeInTimezone } from '../lib/timezone';
 import { PipelineStage } from 'mongoose';
+import * as removalLog from './removalLogger';
 
 interface CsvRow {
   inventory_id: number;
@@ -670,6 +671,14 @@ export function applyDominatedListingsFilter(
   records: CsvRow[],
   enabledMappingIds: Set<string>,
   venueIndex: VenueRowIndex | null = null,
+  logSink?: (entry: {
+    row: CsvRow;
+    tier: 'broker' | 'fan' | 'standard' | 'other';
+    outcome: 'KEPT' | 'REMOVED';
+    reason: 'DOMINATED' | 'CLEAN_SURVIVOR' | 'PASSTHROUGH';
+    detail: string;
+    dominatorInventoryId?: string;
+  }) => void,
 ): { kept: CsvRow[]; dropped: number } {
   if (enabledMappingIds.size === 0) return { kept: records, dropped: 0 };
 
@@ -699,6 +708,8 @@ export function applyDominatedListingsFilter(
   for (const r of records) {
     if (!enabledMappingIds.has(r.event_id)) {
       passthrough.push(r);
+      logSink?.({ row: r, tier: tierOf(r.tags), outcome: 'KEPT', reason: 'PASSTHROUGH',
+        detail: 'event not opted into dominated-listings' });
       continue;
     }
     const venueRank = lookupVenueRank(venueIndex, r.event_id, r.section, r.row);
@@ -708,6 +719,8 @@ export function applyDominatedListingsFilter(
         : rankRowLabel(r.row);
     if (rank == null) {
       passthrough.push(r);
+      logSink?.({ row: r, tier: tierOf(r.tags), outcome: 'KEPT', reason: 'PASSTHROUGH',
+        detail: `row label "${r.row}" is not rankable (mixed / blank / multi-letter)` });
       continue;
     }
     const bkey = `${r.event_id}|${r.section}|${r.quantity}|${r.custom_split || ''}`;
@@ -736,11 +749,16 @@ export function applyDominatedListingsFilter(
         const survivors: { row: CsvRow }[] = [];
         for (const item of universe) {
           const perSeat = priceOf(item.row, tier);
-          const dominated = survivors.some(s => priceOf(s.row, tier) <= perSeat);
-          if (dominated) {
+          const dominator = survivors.find(s => priceOf(s.row, tier) <= perSeat);
+          if (dominator) {
             dropped++;
+            logSink?.({ row: item.row, tier, outcome: 'REMOVED', reason: 'DOMINATED',
+              detail: `dominated by row ${dominator.row.row} @ ${tier === 'broker' ? 'list' : 'face'} $${priceOf(dominator.row, tier).toFixed(2)} in ${tier}/${kind} universe`,
+              dominatorInventoryId: String(dominator.row.inventory_id) });
           } else {
             survivors.push(item);
+            logSink?.({ row: item.row, tier, outcome: 'KEPT', reason: 'CLEAN_SURVIVOR',
+              detail: `front-most in ${tier}/${kind} at ${tier === 'broker' ? 'list' : 'face'} $${perSeat.toFixed(2)} — nothing in front is at-or-below` });
           }
         }
         kept.push(...survivors.map(s => s.row));
@@ -949,6 +967,36 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
     // Clear venue timezone cache at the start of each CSV generation run
     _venueTzCache.clear();
 
+    // Start a per-run removal log. When REMOVAL_LOG=1 is set, every
+    // filter records a KEPT/REMOVED entry per listing so we can audit
+    // exactly why each row survived or dropped. When disabled, every
+    // log call is a cheap no-op.
+    const runId = removalLog.startRun();
+
+    // Compact helper for turning a CsvRow into the base fields the
+    // removal log entries share. Kept as a closure so it can be reused
+    // across all inline filter steps in this function.
+    const removalEntryBase = (r: CsvRow) => ({
+      inventoryId: String(r.inventory_id),
+      eventId: r.event_id,
+      section: r.section,
+      row: r.row,
+      quantity: r.quantity,
+      customSplit: r.custom_split,
+      tags: r.tags,
+      tier: (
+        /BROKER/i.test(r.tags || '') ? 'broker' :
+        /FAN/i.test(r.tags || '') ? 'fan' :
+        /STANDARD/i.test(r.tags || '') ? 'standard' : 'other'
+      ) as 'broker' | 'fan' | 'standard' | 'other',
+      listPrice: r.list_price,
+      facePrice: r.face_price,
+    });
+
+    // Track raw input inventory_ids so the end-of-run reconciliation
+    // can rescue any listing that no filter claimed.
+    const rawInputIds = new Set<string>();
+
     // ── Stop low-seat events before generating CSV ──
     const lowSeatResult = await stopLowSeatEvents();
     if (lowSeatResult.stopped > 0) {
@@ -1100,10 +1148,32 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
             const processedBatch = await processBatch(enrichedDocs);
             producedCount += processedBatch.length;
             for (const r of processedBatch) {
-              if (isBlockedVenueState(r)) { excludedCount++; continue; }
-              if (isStandardHoldActive(r)) { excludedCount++; continue; }
-              if (!exclusionFilter(r)) { excludedCount++; continue; }
-              if (rowModeMinSeat && !rowModeMinSeat(r)) { excludedCount++; continue; }
+              rawInputIds.add(String(r.inventory_id));
+              const base = removalEntryBase(r);
+              if (isBlockedVenueState(r)) {
+                excludedCount++;
+                removalLog.log({ ...base, outcome: 'REMOVED', reason: 'BLOCKED_VENUE_STATE',
+                  detail: 'venue state on blocklist (RI/ME)' });
+                continue;
+              }
+              if (isStandardHoldActive(r)) {
+                excludedCount++;
+                removalLog.log({ ...base, outcome: 'REMOVED', reason: 'STANDARD_DROP_HOLD',
+                  detail: `provisional until ${String(r.provisionalUntil)}` });
+                continue;
+              }
+              if (!exclusionFilter(r)) {
+                excludedCount++;
+                removalLog.log({ ...base, outcome: 'REMOVED', reason: 'SECTION_ROW_EXCLUSION',
+                  detail: `sec ${r.section} row ${r.row} matched event exclusion rule` });
+                continue;
+              }
+              if (rowModeMinSeat && !rowModeMinSeat(r)) {
+                excludedCount++;
+                removalLog.log({ ...base, outcome: 'REMOVED', reason: 'MIN_SEAT_ROW',
+                  detail: `row-mode min-seat filter dropped listing` });
+                continue;
+              }
               filteredRecords.push(r);
             }
           }
@@ -1133,13 +1203,20 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
           const key = `${r.event_id}|${r.section}`;
           sectionTotals.set(key, (sectionTotals.get(key) ?? 0) + r.quantity);
         }
+        const beforeSet = new Set(filteredRecords.map(r => String(r.inventory_id)));
         filteredRecords = filteredRecords.filter(r => {
           const key = `${r.event_id}|${r.section}`;
-          return (sectionTotals.get(key) ?? 0) > minSeatFilter;
+          const keep = (sectionTotals.get(key) ?? 0) > minSeatFilter;
+          if (!keep) {
+            removalLog.log({ ...removalEntryBase(r), outcome: 'REMOVED', reason: 'MIN_SEAT_SECTION',
+              detail: `section total ${sectionTotals.get(key)} <= ${minSeatFilter}` });
+          }
+          return keep;
         });
         const removed = beforeMinSeat - filteredRecords.length;
         excludedCount += removed;
         console.log(`[CSV] Min seat filter [section] (<= ${minSeatFilter}): removed ${removed} listings`);
+        void beforeSet;
       }
 
       // Dominated-listings rule: fires only for events opted in via
@@ -1149,7 +1226,20 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
       if (dominatedEnabled.size > 0) {
         const beforeDom = filteredRecords.length;
         const venueIndex = await loadVenueRowIndex(filteredRecords);
-        const { kept, dropped } = applyDominatedListingsFilter(filteredRecords, dominatedEnabled, venueIndex);
+        const { kept, dropped } = applyDominatedListingsFilter(
+          filteredRecords, dominatedEnabled, venueIndex,
+          (e) => removalLog.log({
+            inventoryId: String(e.row.inventory_id),
+            eventId: e.row.event_id,
+            section: e.row.section, row: e.row.row,
+            quantity: e.row.quantity,
+            customSplit: e.row.custom_split, tags: e.row.tags,
+            tier: e.tier,
+            listPrice: e.row.list_price, facePrice: e.row.face_price,
+            outcome: e.outcome, reason: e.reason,
+            detail: e.detail, dominatorInventoryId: e.dominatorInventoryId,
+          }),
+        );
         filteredRecords = kept;
         excludedCount += dropped;
         console.log(`[CSV] Dominated-listings filter: ${dominatedEnabled.size} events opted in, removed ${dropped} of ${beforeDom} listings (venue-map: ${venueIndex.size} venues cached)`);
@@ -1186,6 +1276,21 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
         console.log(`[CSV] Cover-listings expansion: ${coverEnabled.size} events opted in, added ${added} sibling listings to ${beforeCov} parents`);
       }
 
+      // End-of-run reconciliation: every raw input row must have a
+      // RemovalLog entry. Anything that dropped without an attributable
+      // reason is rescued (KEPT reason='RECOVERED_NO_ATTRIBUTION') so
+      // no inventory silently disappears. Requires REMOVAL_LOG=1.
+      if (removalLog.isEnabled()) {
+        const keptIds = new Set<string>(filteredRecords.map(r => String(r.inventory_id)));
+        const rescuedIds = removalLog.reconcile(rawInputIds, keptIds, () => null);
+        if (rescuedIds.length > 0) {
+          console.warn(`[RemovalLog] Rescued ${rescuedIds.length} listings that had no attribution. Alert: pipeline dropped them without a reason.`);
+        }
+        const s = removalLog.summary();
+        const byReasonStr = Object.entries(s.byReason).map(([k, v]) => `${k}=${v}`).join(' ');
+        console.log(`[RemovalLog] runId=${runId} total=${s.total} ${byReasonStr}`);
+        await removalLog.finishRun();
+      }
       console.log(`[CSV] Done: ${filteredRecords.length} kept / ${producedCount} produced / ${excludedCount} excluded (processed ${processedCount} docs in ${Date.now() - startTime}ms)`);
 
       if (filteredRecords.length === 0) {
