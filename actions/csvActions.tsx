@@ -651,13 +651,19 @@ export function rankRowLabel(row: string | null | undefined): RowRank | null {
 //   1. VenueRowMap cache lookup (kind='venue') — authoritative TM order.
 //   2. Numeric row label (kind='num') — 1 = best, 10000 = worst.
 //   3. Single-letter row label (kind='alpha') — A = best, Z = worst.
-//   Otherwise (AA / AAA / mixed / blank): the listing passes through.
-// Within (event_id, section, quantity, custom_split), items split into
-// independent universes by rank kind — 'venue' rows never dominate
-// 'num' or 'alpha' rows and vice versa. Each universe is then sorted
-// by rank asc, tie-broken by per-seat list_price asc, and any record
-// whose front-sibling in the same universe is already at <= per-seat
-// price is dropped.
+//   4. Same-letter double AA/BB/…/ZZ (kind='alpha2') — 1..26 by letter.
+//   5. Same-letter triple AAA/BBB/…/ZZZ (kind='alpha3') — 1..26.
+//   Otherwise (mixed labels / blank): the listing passes through.
+// Within (event_id, section, quantity, custom_split), items are split
+// into nested universes: outer split by TIER (broker / fan / standard /
+// other, read from the tags column), inner split by row-label kind.
+// A broker row never competes with a fan or standard row; a numeric
+// row never competes with a letter row; etc. Every (tier, kind)
+// bucket runs its own dominance sweep.
+// Price basis differs by tier: broker ranks on list_price (its pricing
+// strategy sets a fixed markup, so list is the meaningful basis);
+// fan / standard / other rank on face_price (so the seat with the
+// lower face wins regardless of per-listing markup).
 // Records for events NOT in enabledMappingIds pass through untouched.
 // GA/parking/lawn (no rankable row) also pass through.
 export function applyDominatedListingsFilter(
@@ -667,7 +673,26 @@ export function applyDominatedListingsFilter(
 ): { kept: CsvRow[]; dropped: number } {
   if (enabledMappingIds.size === 0) return { kept: records, dropped: 0 };
 
-  type Bucket = { items: { row: CsvRow; rank: RowRank }[] };
+  // Tier extraction from the tags column. Tags typically look like
+  // "RESALE BROKER", "RESALE FAN INVENTORY", or "STANDARD". Broker
+  // inventory ranks on list_price (its pricing strategy sets a fixed
+  // markup so list is the meaningful basis). Fan and Standard rank on
+  // face_price so the seat with the lower face wins regardless of how
+  // the individual listing was marked up. "Other" tiers (missing or
+  // unrecognized) default to face-price ranking alongside standard.
+  type Tier = 'broker' | 'fan' | 'standard' | 'other';
+  function tierOf(tags: string | undefined): Tier {
+    const t = (tags || '').toUpperCase();
+    if (t.includes('BROKER')) return 'broker';
+    if (t.includes('FAN')) return 'fan';
+    if (t.includes('STANDARD')) return 'standard';
+    return 'other';
+  }
+  function priceOf(r: CsvRow, tier: Tier): number {
+    return tier === 'broker' ? (r.list_price ?? 0) : (r.face_price ?? 0);
+  }
+
+  type Bucket = { items: { row: CsvRow; rank: RowRank; tier: Tier }[] };
   const buckets = new Map<string, Bucket>();
   const passthrough: CsvRow[] = [];
 
@@ -688,30 +713,38 @@ export function applyDominatedListingsFilter(
     const bkey = `${r.event_id}|${r.section}|${r.quantity}|${r.custom_split || ''}`;
     let b = buckets.get(bkey);
     if (!b) { b = { items: [] }; buckets.set(bkey, b); }
-    b.items.push({ row: r, rank });
+    b.items.push({ row: r, rank, tier: tierOf(r.tags) });
   }
 
+  // Nested universe iteration: outer = tier (3 tiers + other), inner =
+  // row-label kind. Standard / Fan / other rank on face_price, Broker
+  // ranks on list_price. No cross-tier comparison, no cross-row-label
+  // comparison — each (tier, rowLabel) bucket is its own dominance sweep.
   const kept: CsvRow[] = [...passthrough];
   let dropped = 0;
+  const TIERS: Tier[] = ['broker', 'fan', 'standard', 'other'];
+  const KINDS = ['venue', 'num', 'alpha', 'alpha2', 'alpha3'] as const;
   for (const bucket of buckets.values()) {
-    for (const kind of ['venue', 'num', 'alpha', 'alpha2', 'alpha3'] as const) {
-      const universe = bucket.items.filter(it => it.rank.kind === kind);
-      if (universe.length === 0) continue;
-      universe.sort((a, b) => {
-        if (a.rank.rank !== b.rank.rank) return a.rank.rank - b.rank.rank;
-        return (a.row.list_price ?? 0) - (b.row.list_price ?? 0);
-      });
-      const survivors: { row: CsvRow }[] = [];
-      for (const item of universe) {
-        const perSeat = item.row.list_price ?? 0;
-        const dominated = survivors.some(s => (s.row.list_price ?? 0) <= perSeat);
-        if (dominated) {
-          dropped++;
-        } else {
-          survivors.push(item);
+    for (const tier of TIERS) {
+      for (const kind of KINDS) {
+        const universe = bucket.items.filter(it => it.tier === tier && it.rank.kind === kind);
+        if (universe.length === 0) continue;
+        universe.sort((a, b) => {
+          if (a.rank.rank !== b.rank.rank) return a.rank.rank - b.rank.rank;
+          return priceOf(a.row, tier) - priceOf(b.row, tier);
+        });
+        const survivors: { row: CsvRow }[] = [];
+        for (const item of universe) {
+          const perSeat = priceOf(item.row, tier);
+          const dominated = survivors.some(s => priceOf(s.row, tier) <= perSeat);
+          if (dominated) {
+            dropped++;
+          } else {
+            survivors.push(item);
+          }
         }
+        kept.push(...survivors.map(s => s.row));
       }
-      kept.push(...survivors.map(s => s.row));
     }
   }
   return { kept, dropped };
