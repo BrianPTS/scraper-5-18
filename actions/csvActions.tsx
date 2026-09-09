@@ -661,10 +661,9 @@ export function rankRowLabel(row: string | null | undefined): RowRank | null {
 // A broker row never competes with a fan or standard row; a numeric
 // row never competes with a letter row; etc. Every (tier, kind)
 // bucket runs its own dominance sweep.
-// Price basis differs by tier: broker ranks on list_price (its pricing
-// strategy sets a fixed markup, so list is the meaningful basis);
-// fan / standard / other rank on face_price (so the seat with the
-// lower face wins regardless of per-listing markup).
+// All tiers rank on face_price so the seat with the lower underlying
+// face value wins within its own tier, regardless of per-listing
+// markup. Tier isolation prevents any cross-tier domination.
 // Records for events NOT in enabledMappingIds pass through untouched.
 // GA/parking/lawn (no rankable row) also pass through.
 export function applyDominatedListingsFilter(
@@ -683,12 +682,10 @@ export function applyDominatedListingsFilter(
   if (enabledMappingIds.size === 0) return { kept: records, dropped: 0 };
 
   // Tier extraction from the tags column. Tags typically look like
-  // "RESALE BROKER", "RESALE FAN INVENTORY", or "STANDARD". Broker
-  // inventory ranks on list_price (its pricing strategy sets a fixed
-  // markup so list is the meaningful basis). Fan and Standard rank on
-  // face_price so the seat with the lower face wins regardless of how
-  // the individual listing was marked up. "Other" tiers (missing or
-  // unrecognized) default to face-price ranking alongside standard.
+  // "RESALE BROKER", "RESALE FAN INVENTORY", or "STANDARD". All tiers
+  // rank on face_price so the seat with the lower underlying face
+  // value wins within its own tier. Tier isolation prevents a broker
+  // seat from ever dominating a fan seat and vice versa.
   type Tier = 'broker' | 'fan' | 'standard' | 'other';
   function tierOf(tags: string | undefined): Tier {
     const t = (tags || '').toUpperCase();
@@ -697,8 +694,8 @@ export function applyDominatedListingsFilter(
     if (t.includes('STANDARD')) return 'standard';
     return 'other';
   }
-  function priceOf(r: CsvRow, tier: Tier): number {
-    return tier === 'broker' ? (r.list_price ?? 0) : (r.face_price ?? 0);
+  function priceOf(r: CsvRow, _tier: Tier): number {
+    return r.face_price ?? 0;
   }
 
   type Bucket = { items: { row: CsvRow; rank: RowRank; tier: Tier }[] };
@@ -753,12 +750,12 @@ export function applyDominatedListingsFilter(
           if (dominator) {
             dropped++;
             logSink?.({ row: item.row, tier, outcome: 'REMOVED', reason: 'DOMINATED',
-              detail: `dominated by row ${dominator.row.row} @ ${tier === 'broker' ? 'list' : 'face'} $${priceOf(dominator.row, tier).toFixed(2)} in ${tier}/${kind} universe`,
+              detail: `dominated by row ${dominator.row.row} @ ${'face'} $${priceOf(dominator.row, tier).toFixed(2)} in ${tier}/${kind} universe`,
               dominatorInventoryId: String(dominator.row.inventory_id) });
           } else {
             survivors.push(item);
             logSink?.({ row: item.row, tier, outcome: 'KEPT', reason: 'CLEAN_SURVIVOR',
-              detail: `front-most in ${tier}/${kind} at ${tier === 'broker' ? 'list' : 'face'} $${perSeat.toFixed(2)} — nothing in front is at-or-below` });
+              detail: `front-most in ${tier}/${kind} at ${'face'} $${perSeat.toFixed(2)} — nothing in front is at-or-below` });
           }
         }
         kept.push(...survivors.map(s => s.row));
