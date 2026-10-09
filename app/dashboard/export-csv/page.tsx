@@ -1308,7 +1308,7 @@ const ExportCsvPage: React.FC = () => {
                   {(autoDeletePreview.skippedCount ?? 0) > 0 && (
                     <>
                       <br />
-                      <span className="text-amber-600 font-medium">{autoDeletePreview.skippedCount} events skipped — timezone could not be detected from venue</span>
+                      <span className="text-amber-600 font-medium">{autoDeletePreview.skippedCount} events using Eastern Time fallback — timezone could not be detected from venue</span>
                     </>
                   )}
                 </p>
@@ -1383,7 +1383,7 @@ const ExportCsvPage: React.FC = () => {
                   {(autoDeletePreview.skippedEvents?.length ?? 0) > 0 && (
                     <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
                       <p className="text-amber-800 text-sm font-semibold mb-2">
-                        Events skipped (timezone not detected from venue):
+                        Events using Eastern Time fallback (timezone not detected from venue):
                       </p>
                       <div className="max-h-32 overflow-y-auto text-sm text-amber-700">
                         {autoDeletePreview.skippedEvents!.map((e, i) => (
@@ -1393,7 +1393,7 @@ const ExportCsvPage: React.FC = () => {
                         ))}
                       </div>
                       <p className="text-amber-600 text-xs mt-2">
-                        These events were NOT checked because their venue text does not contain a recognizable state, city, or venue name.
+                        Their venue text does not contain a recognizable state, city, or venue name, so they are checked against Eastern Time (stops early, never late, for other US timezones).
                       </p>
                     </div>
                   )}

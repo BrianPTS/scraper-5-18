@@ -1211,11 +1211,11 @@ export default function DashboardPage() {
                 </button>
               )}
 
-              {/* Skipped events warning */}
+              {/* Fallback-timezone events warning */}
               {(autoDeleteInfo.skippedCount ?? 0) > 0 && (
                 <div className="mt-3 text-xs text-orange-600 flex items-center">
                   <AlertTriangle className="w-3 h-3 mr-1" />
-                  {autoDeleteInfo.skippedCount} event{autoDeleteInfo.skippedCount !== 1 ? 's' : ''} skipped — timezone could not be detected from venue
+                  {autoDeleteInfo.skippedCount} event{autoDeleteInfo.skippedCount !== 1 ? 's' : ''} using Eastern Time fallback — timezone could not be detected from venue
                 </div>
               )}
             </div>

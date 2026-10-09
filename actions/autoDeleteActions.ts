@@ -25,9 +25,12 @@ import { Event } from '@/models/eventModel';
 import { ConsecutiveGroup } from '@/models/seatModel';
 import { deleteConsecutiveGroupsByEventIds } from './seatActions';
 import { createErrorLog } from './errorLogActions';
-import { shouldStopEvent, shouldStopEventAsync, detectTimezoneFromVenue, detectTimezoneFromVenueAsync, getTimezoneAbbr, getCurrentTimeInTimezone } from '@/lib/timezone';
+import { shouldStopEvent, shouldStopEventAsync, detectTimezoneFromVenue, getTimezoneAbbr, getCurrentTimeInTimezone } from '@/lib/timezone';
 import { ensureTimeSynced, getTimeSyncStatus, getAccurateNow } from '@/lib/timeSync';
 import { AutoDeleteSettings } from '@/models/autoDeleteModel';
+
+/** Timezone used when a venue's timezone cannot be detected (Eastern = earliest stop for US events). */
+const FALLBACK_TIMEZONE = 'America/New_York';
 
 /**
  * Format a Date as Pakistan Standard Time string (PKT = UTC+5)
@@ -113,18 +116,18 @@ export async function deleteExpiredEvents(stopBeforeMinutes: number = 120, lowSe
 
     // Check each event against its venue's timezone (async — with live API fallback)
     const eventsToDelete = [];
-    const skippedEvents = [];
+    const fallbackEvents = [];
     for (const event of allEvents) {
       const venue = event.Venue || '';
-      // Use async version for live API fallback covering all US cities
-      const result = await shouldStopEventAsync(event.Event_DateTime, venue, stopBeforeMinutes);
-      
-      if (!result) {
-        // Timezone could not be detected from venue — skip this event
-        skippedEvents.push(event);
-        continue;
+      // Use async version for live API fallback covering all US cities.
+      // Undetectable venues fall back to Eastern — the latest US clock — so they stop early, never late.
+      const result = await shouldStopEventAsync(event.Event_DateTime, venue, stopBeforeMinutes, FALLBACK_TIMEZONE);
+      if (!result) continue;
+
+      if (result.usedFallback) {
+        fallbackEvents.push(event);
       }
-      
+
       if (result.shouldStop) {
         eventsToDelete.push({
           event,
@@ -135,9 +138,9 @@ export async function deleteExpiredEvents(stopBeforeMinutes: number = 120, lowSe
       }
     }
 
-    if (skippedEvents.length > 0) {
-      console.warn(`Auto-delete: Skipped ${skippedEvents.length} events — timezone could not be detected from venue:`);
-      for (const e of skippedEvents) {
+    if (fallbackEvents.length > 0) {
+      console.warn(`Auto-delete: ${fallbackEvents.length} events using ${FALLBACK_TIMEZONE} fallback — timezone could not be detected from venue:`);
+      for (const e of fallbackEvents) {
         console.warn(`  ⚠ ${e.Event_ID} | ${e.Event_Name} | Venue: "${e.Venue || '(empty)'}"`);
       }
     }
@@ -404,25 +407,12 @@ export async function getExpiredEventsStats(stopBeforeMinutes: number = 120) {
     for (const event of allEvents) {
       const venue = event.Venue || '';
       // Use async version for live API fallback covering all US cities
-      const tz = await detectTimezoneFromVenueAsync(venue);
-      const result = tz ? await shouldStopEventAsync(event.Event_DateTime, venue, stopBeforeMinutes) : null;
-      
-      if (!result || !tz) {
-        // Timezone undetectable — show in preview as skipped
-        eventsSkipped.push({
-          id: event.Event_ID,
-          name: event.Event_Name,
-          dateTime: event.Event_DateTime,
-          venue: event.Venue,
-          isStopped: event.Skip_Scraping,
-          detectedTimezone: 'N/A',
-          localTimeNow: null,
-        });
-        continue;
-      }
+      const result = await shouldStopEventAsync(event.Event_DateTime, venue, stopBeforeMinutes, FALLBACK_TIMEZONE);
+      if (!result) continue;
 
+      const tz = result.timezone;
       const localNow = getCurrentTimeInTimezone(tz);
-      const tzAbbr = getTimezoneAbbr(tz);
+      const tzAbbr = getTimezoneAbbr(tz) + (result.usedFallback ? ' (fallback)' : '');
       const accurateNow = getAccurateNow();
       
       const eventInfo = {
@@ -437,6 +427,10 @@ export async function getExpiredEventsStats(stopBeforeMinutes: number = 120) {
         localTimeDisplay: formatInTimezone(accurateNow, tz, tzAbbr),
         pktTimeDisplay: formatAsPKT(accurateNow),
       };
+
+      if (result.usedFallback) {
+        eventsSkipped.push(eventInfo);
+      }
 
       if (result.shouldStop) {
         eventsToDelete.push(eventInfo);

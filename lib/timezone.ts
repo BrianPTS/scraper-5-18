@@ -787,12 +787,18 @@ function reverifyInBackground(venue: string, cacheKey: string, currentTz: string
 // shouldStopEvent (sync + async)
 // ══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * @param fallbackTimezone - Used when the venue's timezone cannot be detected.
+ *   If omitted, returns null for undetectable venues.
+ */
 export async function shouldStopEventAsync(
   eventDateTime: Date,
   venue: string,
-  stopBeforeMinutes: number
-): Promise<{ shouldStop: boolean; timezone: string; localNow: Date; cutoff: Date } | null> {
-  const timezone = await detectTimezoneFromVenueAsync(venue);
+  stopBeforeMinutes: number,
+  fallbackTimezone?: string
+): Promise<{ shouldStop: boolean; timezone: string; localNow: Date; cutoff: Date; usedFallback: boolean } | null> {
+  const detected = await detectTimezoneFromVenueAsync(venue);
+  const timezone = detected || fallbackTimezone;
   if (!timezone) return null;
 
   const nowInEventTz = getCurrentTimeInTimezone(timezone);
@@ -803,6 +809,7 @@ export async function shouldStopEventAsync(
     timezone,
     localNow: nowInEventTz,
     cutoff: cutoffTime,
+    usedFallback: !detected,
   };
 }
 
