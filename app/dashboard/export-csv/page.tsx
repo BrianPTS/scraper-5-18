@@ -891,11 +891,12 @@ const ExportCsvPage: React.FC = () => {
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent" />
                 </div>
                 <div>
-                  <label htmlFor="eventUpdateFilterMinutes" className="block text-xs font-medium text-slate-600 mb-1">Update Filter (min)</label>
+                  <label htmlFor="eventUpdateFilterMinutes" className="block text-xs font-medium text-slate-600 mb-1" title="Events the scraper hasn't refreshed in this many minutes stay listed at a 1000% markup until they refresh again (0 = off)">Stale after (min)</label>
                   <input type="number" id="eventUpdateFilterMinutes" value={settings.eventUpdateFilterMinutes}
                     onChange={(e) => setSettings(prev => ({ ...prev, eventUpdateFilterMinutes: parseInt(e.target.value) || 0 }))}
                     min="0" max="10080"
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent" />
+                  <p className="mt-1 text-[11px] text-slate-400">Stale events stay listed at 1000% markup</p>
                 </div>
               </div>
 

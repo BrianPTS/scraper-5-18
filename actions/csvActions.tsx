@@ -38,6 +38,41 @@ import { deleteExpiredEvents, getExpiredEventsStats, deletePassedEvents } from '
 import { deleteConsecutiveGroupsByEventIds } from './seatActions';
 import { detectTimezoneFromVenueAsync, resolveVenueTimezonesBulk, getCurrentTimeInTimezone } from '../lib/timezone';
 import { PipelineStage } from 'mongoose';
+import { csvListPrice, nextStaleState, STALE_MARKUP_PCT } from '../lib/csvPricing';
+
+/**
+ * Work out which events are stale (not refreshed by the scraper within staleMinutes)
+ * and store each event's state, so recovery only happens once a refresh is again
+ * within a few minutes. Written without touching updatedAt, which would make the
+ * event look freshly scraped. Returns the _ids of the stale events.
+ */
+async function updateStaleEvents(
+  eventDocs: Array<{ _id: unknown; Last_Updated?: Date; updatedAt?: Date; staleMarkupActive?: boolean }>,
+  staleMinutes: number,
+): Promise<Set<string>> {
+  const stale = new Set<string>();
+  const nowStale: unknown[] = [];
+  const recovered: unknown[] = [];
+  for (const ev of eventDocs) {
+    const was = ev.staleMarkupActive === true;
+    const is = nextStaleState(was, ev.Last_Updated ?? ev.updatedAt, staleMinutes);
+    if (is) stale.add(String(ev._id));
+    if (is && !was) nowStale.push(ev._id);
+    if (!is && was) recovered.push(ev._id);
+  }
+  if (nowStale.length > 0) {
+    await Event.updateMany({ _id: { $in: nowStale } },
+      { $set: { staleMarkupActive: true, staleMarkupSince: new Date() } }, { timestamps: false });
+  }
+  if (recovered.length > 0) {
+    await Event.updateMany({ _id: { $in: recovered } },
+      { $set: { staleMarkupActive: false, staleMarkupSince: null } }, { timestamps: false });
+  }
+  if (nowStale.length > 0 || recovered.length > 0) {
+    console.log(`[CSV] Stale markup: ${nowStale.length} event(s) now at ${STALE_MARKUP_PCT}%, ${recovered.length} back to their own markup (${stale.size} stale in total)`);
+  }
+  return stale;
+}
 
 interface CsvRow {
   inventory_id: number;
@@ -387,14 +422,12 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
       // Only include active events (Skip_Scraping: false)
       const activeEventQuery: Record<string, any> = { Skip_Scraping: false };
 
-      // If eventUpdateFilterMinutes is provided, also filter by recently updated events
-      if (eventUpdateFilterMinutes > 0) {
-        const cutoffTime = new Date(Date.now() - eventUpdateFilterMinutes * 60 * 1000);
-        activeEventQuery.updatedAt = { $gte: cutoffTime };
-        console.log(`Filter: Active events updated within last ${eventUpdateFilterMinutes} minutes since ${cutoffTime.toISOString()}`);
-      } else {
-        console.log('Including all active events (Skip_Scraping: false)');
-      }
+      // Events not refreshed within eventUpdateFilterMinutes stay in the CSV at the
+      // stale markup (see lib/csvPricing.ts) instead of dropping out, which deleted
+      // their listings.
+      console.log(eventUpdateFilterMinutes > 0
+        ? `Including all active events; not refreshed in ${eventUpdateFilterMinutes} min -> ${STALE_MARKUP_PCT}% markup`
+        : 'Including all active events (Skip_Scraping: false)');
 
       const activeEvents = await Event.find(
         activeEventQuery,
@@ -406,9 +439,7 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
       console.log(`Found ${activeEvents.length} active events matching filter criteria`);
 
       if (activeEvents.length === 0) {
-        return { success: false, message: eventUpdateFilterMinutes > 0
-          ? `No active events updated within the last ${eventUpdateFilterMinutes} minutes.`
-          : 'No active events found (all events have Skip_Scraping enabled).' };
+        return { success: false, message: 'No active events found (all events have Skip_Scraping enabled).' };
       }
 
       const eventMappingIds = activeEvents.map(event => event.mapping_id);
@@ -417,15 +448,17 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
       // Pre-fetch ALL event details once (small — only active events) instead of
       // running $lookup per chunk. This is the single biggest speed-up.
       const eventDetailsMap = new Map<string, {
-        url: string; stdAdj: number; resaleAdj: number; brokerAdj: number; defaultPct: number;
+        url: string; stdAdj: number; resaleAdj: number; brokerAdj: number; defaultPct: number; stale: boolean;
         includeStandard: boolean; includeResale: boolean;
       }>();
       const eventDocs = await Event.find(
         { mapping_id: { $in: eventMappingIds } },
         { mapping_id: 1, URL: 1, standardMarkupAdjustment: 1, resaleMarkupAdjustment: 1,
           brokerMarkupAdjustment: 1, priceIncreasePercentage: 1,
+          Last_Updated: 1, updatedAt: 1, staleMarkupActive: 1,
           includeStandardSeats: 1, includeResaleSeats: 1 }
       ).lean();
+      const staleIds = await updateStaleEvents(eventDocs, eventUpdateFilterMinutes);
       for (const ev of eventDocs) {
         eventDetailsMap.set(ev.mapping_id, {
           url: ev.URL || '',
@@ -433,6 +466,7 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
           resaleAdj: ev.resaleMarkupAdjustment ?? 0,
           brokerAdj: ev.brokerMarkupAdjustment ?? 0,
           defaultPct: ev.priceIncreasePercentage ?? 0,
+          stale: staleIds.has(String(ev._id)),
           includeStandard: ev.includeStandardSeats !== false,
           includeResale: ev.includeResaleSeats !== false,
         });
@@ -520,6 +554,7 @@ export async function generateInventoryCsv(eventUpdateFilterMinutes: number = 0)
             doc.event_resale_adj = evData?.resaleAdj ?? 0;
             doc.event_broker_adj = evData?.brokerAdj ?? 0;
             doc.event_default_pct = evData?.defaultPct ?? 0;
+            doc.event_stale = evData?.stale ?? false;
             enrichedDocs.push(doc);
           }
           if (enrichedDocs.length > 0) {
@@ -645,6 +680,7 @@ interface ConsecutiveGroupDocument {
   event_resale_adj?: number;
   event_broker_adj?: number;
   event_default_pct?: number;
+  event_stale?: boolean;
   seats?: Array<{ number: string | number }>;
 }
 
@@ -720,8 +756,9 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
     const row = inventory?.row || '';
     const isGALawn = /^GA\d+$/i.test(row);
 
-    // Apply per-ticket-type markup adjustment on top of already-marked-up listPrice.
-    // Formula: adjustedPrice = listPrice * (1 + (defaultPct + adj) / 100) / (1 + defaultPct / 100)
+    // Price from TM's price (cost) with the event's current default markup plus the
+    // per-type adjustment, so either change reaches this CSV on the same inventory ID.
+    // Stale events use the stale markup instead (lib/csvPricing.ts).
     // Broker resale (tag contains "broker") uses brokerAdj; falls back to resaleAdj if brokerAdj is 0.
     const rawListPrice = inventory?.listPrice || 0;
     const defaultPct = doc.event_default_pct ?? 0;
@@ -731,9 +768,9 @@ async function processBatch(batch: ConsecutiveGroupDocument[]): Promise<CsvRow[]
     const adj = isBroker
       ? (brokerAdj !== 0 ? brokerAdj : resaleAdjVal)
       : isResale ? resaleAdjVal : (doc.event_std_adj ?? 0);
-    const adjustedListPrice = defaultPct !== 0 || adj !== 0
-      ? rawListPrice * (1 + (defaultPct + adj) / 100) / (1 + defaultPct / 100)
-      : rawListPrice;
+    const adjustedListPrice = csvListPrice({
+      cost: inventory?.cost, listPrice: rawListPrice, defaultPct, adj, stale: doc.event_stale,
+    });
 
     // Pre-compute expensive operations with null safety
     // GA/Lawn seats have synthetic seat numbers — clear them so Sync doesn't see fake numbers
@@ -949,20 +986,15 @@ export async function* generateInventoryCsvStream(
   const minSeatFilterMode = schedulerSettings?.minSeatFilterMode ?? 'section';
 
   try {
+    // Stale events stay in at the stale markup; see generateInventoryCsv.
     const activeEventQuery: Record<string, any> = { Skip_Scraping: false };
-    if (eventUpdateFilterMinutes > 0) {
-      const cutoffTime = new Date(Date.now() - eventUpdateFilterMinutes * 60 * 1000);
-      activeEventQuery.updatedAt = { $gte: cutoffTime };
-    }
 
     const activeEvents = await Event.find(activeEventQuery, { mapping_id: 1 })
       .read('primary')
       .maxTimeMS(30000);
 
     if (activeEvents.length === 0) {
-      yield { type: 'done', error: eventUpdateFilterMinutes > 0
-        ? `No active events updated within the last ${eventUpdateFilterMinutes} minutes.`
-        : 'No active events found (all events have Skip_Scraping enabled).' };
+      yield { type: 'done', error: 'No active events found (all events have Skip_Scraping enabled).' };
       return;
     }
 
@@ -970,15 +1002,17 @@ export async function* generateInventoryCsvStream(
     const eventFilter = { mapping_id: { $in: eventMappingIds } };
 
     const eventDetailsMap = new Map<string, {
-      url: string; stdAdj: number; resaleAdj: number; brokerAdj: number; defaultPct: number;
+      url: string; stdAdj: number; resaleAdj: number; brokerAdj: number; defaultPct: number; stale: boolean;
       includeStandard: boolean; includeResale: boolean;
     }>();
     const eventDocs = await Event.find(
       { mapping_id: { $in: eventMappingIds } },
       { mapping_id: 1, URL: 1, standardMarkupAdjustment: 1, resaleMarkupAdjustment: 1,
         brokerMarkupAdjustment: 1, priceIncreasePercentage: 1,
+          Last_Updated: 1, updatedAt: 1, staleMarkupActive: 1,
         includeStandardSeats: 1, includeResaleSeats: 1 }
     ).lean();
+    const staleIds = await updateStaleEvents(eventDocs, eventUpdateFilterMinutes);
     for (const ev of eventDocs) {
       eventDetailsMap.set(ev.mapping_id, {
         url: ev.URL || '',
@@ -986,6 +1020,7 @@ export async function* generateInventoryCsvStream(
         resaleAdj: ev.resaleMarkupAdjustment ?? 0,
         brokerAdj: ev.brokerMarkupAdjustment ?? 0,
         defaultPct: ev.priceIncreasePercentage ?? 0,
+          stale: staleIds.has(String(ev._id)),
         includeStandard: ev.includeStandardSeats !== false,
         includeResale: ev.includeResaleSeats !== false,
       });
@@ -1071,6 +1106,7 @@ export async function* generateInventoryCsvStream(
           doc.event_resale_adj = evData?.resaleAdj ?? 0;
           doc.event_broker_adj = evData?.brokerAdj ?? 0;
           doc.event_default_pct = evData?.defaultPct ?? 0;
+            doc.event_stale = evData?.stale ?? false;
           enrichedDocs.push(doc);
         }
 

@@ -74,6 +74,17 @@ const eventSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // Set by CSV generation while the scraper has not refreshed this event within the
+    // scheduler's update filter: its listings stay in the CSV at the stale markup
+    // (lib/csvPricing.ts) until a refresh lands within a few minutes again.
+    staleMarkupActive: {
+      type: Boolean,
+      default: false,
+    },
+    staleMarkupSince: {
+      type: Date,
+      default: null,
+    },
     metadata: {
       lastUpdate: String,
       iterationNumber: Number,
