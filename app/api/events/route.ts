@@ -52,6 +52,8 @@ export async function GET(request: Request) {
       Skip_Scraping: 1,
       Last_Updated: 1,
       priceIncreasePercentage: 1,
+      staleMarkupActive: 1,
+      staleMarkupSince: 1,
       standardMarkupAdjustment: 1,
       resaleMarkupAdjustment: 1,
       brokerMarkupAdjustment: 1,

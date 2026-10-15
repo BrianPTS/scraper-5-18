@@ -11,6 +11,7 @@ import {
 import EventDetailActions from './EventDetailActions';
 import PriceEditor from './PriceEditor';
 import CsvExportToggles from './CsvExportToggles';
+import { STALE_MARKUP_PCT, STALE_RECOVER_MINUTES } from '@/lib/csvPricing';
 
 interface EventDetailsProps {
   params: Promise<{ id: string }>;
@@ -29,6 +30,8 @@ interface EventType {
   Skip_Scraping?: boolean;
   inHandDate?: string;
   priceIncreasePercentage?: number;
+  staleMarkupActive?: boolean;
+  staleMarkupSince?: string | null;
   standardMarkupAdjustment?: number;
   resaleMarkupAdjustment?: number;
   brokerMarkupAdjustment?: number;
@@ -74,6 +77,9 @@ export default async function EventDetailsPage({ params }: EventDetailsProps) {
     ? Date.now() - new Date(lastUpdated).getTime() > 4 * 60 * 1000
     : true;
 
+  // The CSV is listing this event at the stale markup until the scraper catches up.
+  const staleMarkup = isActive && event.staleMarkupActive === true;
+
   const pct = event.priceIncreasePercentage ?? 25;
   const stdAdj = event.standardMarkupAdjustment ?? 0;
   const resAdj = event.resaleMarkupAdjustment ?? 0;
@@ -116,6 +122,19 @@ export default async function EventDetailsPage({ params }: EventDetailsProps) {
         </div>
       </div>
 
+      {staleMarkup && (
+        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <span className="mt-0.5 inline-flex shrink-0 items-center rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-bold text-white">{STALE_MARKUP_PCT}%</span>
+          <div>
+            <p className="font-semibold">Listed at {STALE_MARKUP_PCT}% markup — event is stale</p>
+            <p className="text-red-700/80">
+              The scraper has not refreshed this event{event.staleMarkupSince ? ` since ${fmt(event.staleMarkupSince, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} UTC` : ''}.
+              Standard, fan and broker tickets stay listed at {STALE_MARKUP_PCT}% under the same listing IDs. The markup below comes back automatically once a refresh lands within {STALE_RECOVER_MINUTES} minutes.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── Header Card ── */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-5 relative overflow-hidden">
@@ -129,9 +148,14 @@ export default async function EventDetailsPage({ params }: EventDetailsProps) {
                   <Activity size={10} />
                   {isActive ? 'Active' : 'Paused'}
                 </span>
-                {isStale && isActive && (
+                {isStale && isActive && !staleMarkup && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-400/20 text-amber-200 border border-amber-300/30">
                     Stale
+                  </span>
+                )}
+                {staleMarkup && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-600 text-white border border-red-300/40">
+                    {STALE_MARKUP_PCT}% · Stale
                   </span>
                 )}
                 {event.Zone && event.Zone !== 'none' && (

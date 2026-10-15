@@ -10,6 +10,7 @@ import EventsTableControls from './EventsTableControls';
 import EventTableActions from './EventTableActions';
 import PaginationControls from './PaginationControls';
 import TimeAgo from './TimeAgo';
+import { STALE_MARKUP_PCT, STALE_RECOVER_MINUTES } from '@/lib/csvPricing';
 
 interface EventData {
   _id: string;
@@ -22,6 +23,8 @@ interface EventData {
   Last_Updated?: string;
   updatedAt?: string;
   priceIncreasePercentage?: number;
+  staleMarkupActive?: boolean;
+  staleMarkupSince?: string | null;
   standardMarkupAdjustment?: number;
   resaleMarkupAdjustment?: number;
   brokerMarkupAdjustment?: number;
@@ -397,6 +400,7 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                       
                       <td className="px-3 py-2 whitespace-nowrap text-right">
                         <div className="inline-flex flex-col items-end gap-1.5">
+                          {event.staleMarkupActive && !event.Skip_Scraping && <StaleMarkupBadge since={event.staleMarkupSince} />}
                           {/* Base markup */}
                           <span className={`font-bold text-xs px-2 py-0.5 rounded-full tabular-nums ${
                             (event.priceIncreasePercentage || 0) > 0
@@ -553,6 +557,7 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
                         </div>
                         
                         <div className="flex flex-col items-end gap-1.5">
+                          {event.staleMarkupActive && !event.Skip_Scraping && <StaleMarkupBadge since={event.staleMarkupSince} />}
                           <div className="flex items-center justify-end gap-2">
                             <TrendingUp size={14} className="text-gray-400" />
                             <span className={`font-bold text-xs px-2 py-0.5 rounded-full tabular-nums ${
@@ -636,5 +641,20 @@ export default async function EventsTableServerSide({ searchParams }: PageProps)
         </div>
       )}
     </div>
+  );
+}
+
+/** Shown while the CSV lists this event at the stale markup (lib/csvPricing.ts). */
+function StaleMarkupBadge({ since }: { since?: string | null }) {
+  const sinceText = since
+    ? new Date(since).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : null;
+  return (
+    <span
+      title={`Not refreshed by the scraper${sinceText ? ` since ${sinceText}` : ''}. The CSV lists every ticket at ${STALE_MARKUP_PCT}% until a refresh lands within ${STALE_RECOVER_MINUTES} minutes; then the event's own markup comes back.`}
+      className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white tabular-nums whitespace-nowrap"
+    >
+      {STALE_MARKUP_PCT}% · STALE
+    </span>
   );
 }
