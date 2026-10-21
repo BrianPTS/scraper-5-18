@@ -10,6 +10,7 @@
     "update-pricing": "node scripts/updateEventsPricing.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.0.0",
     "@lottiefiles/dotlottie-react": "^0.18.3",
     "@react-spring/web": "^10.0.3",
     "@types/node-cron": "^3.0.11",

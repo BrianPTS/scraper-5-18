@@ -4,6 +4,7 @@ import React, { useState, useCallback, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createEvent } from '@/actions/eventActions';
 import CsvAdjustments from '@/components/ui/CsvAdjustments';
+import { DEFAULT_MARKUP } from '@/lib/markupDefaults';
 import Image from 'next/image';
 import {
   Search, Import, Calendar, MapPin, ChevronLeft, ChevronRight,
@@ -70,15 +71,6 @@ interface ListedInfo {
   scrapingActive: boolean;
 }
 
-interface VSProd {
-  id: number;
-  localDate?: string;
-  utcDate?: string;
-  name?: string;
-  webPath?: string;
-  venue?: { name?: string; city?: string; state?: string };
-}
-
 interface ImportState {
   mappingId: string;
   percentage: number;
@@ -87,8 +79,9 @@ interface ImportState {
   brokerAdj: number;
   status: 'idle' | 'importing' | 'success' | 'error';
   error?: string;
-  vividSearchUrl?: string;
-  ambiguousProductions?: VSProd[];
+  stubhubSearchUrl?: string;
+  stubhubCandidate?: { id: string; url: string; name: string | null };
+  stubhubNote?: string;
 }
 
 interface Props {
@@ -232,7 +225,7 @@ export default function ImportEventsClient({
 
   // Import state
   const [imports, setImports] = useState<Record<string, ImportState>>({});
-  const [fetchingVividId, setFetchingVividId] = useState<Record<string, boolean>>({});
+  const [fetchingStubhubId, setFetchingStubhubId] = useState<Record<string, boolean>>({});
 
   /* ---- URL helpers ---- */
   const buildUrl = useCallback((overrides: Record<string, string | undefined>) => {
@@ -300,225 +293,70 @@ export default function ImportEventsClient({
     navigate({ page: String(p) });
   };
 
-  /* ---- Vivid ID fetch (client-side matching, server only for search redirect) ---- */
+  /* ---- StubHub ID fetch (server runs a search agent; see app/api/stubhub/lookup) ---- */
 
-  /** Extract search terms from TM event name */
-  const extractSearchTerms = (eventName: string): string[] => {
-    const terms: string[] = [];
-    const atMatch = eventName.match(/(.+?)\s+at\s+(.+)/i);
-    if (atMatch) { terms.push(atMatch[2].trim()); terms.push(atMatch[1].trim()); }
-    const vsMatch = eventName.match(/(.+?)\s+vs\.?\s+(.+)/i);
-    if (vsMatch) { terms.push(vsMatch[1].trim()); terms.push(vsMatch[2].trim()); }
-    if (terms.length === 0) {
-      const parts = eventName.split(/[|–—]/);
-      const primary = parts[0]?.trim().replace(/\(.*?\)/g, '').replace(/\s*tickets?\s*$/i, '').trim();
-      if (primary) terms.push(primary);
-      const full = eventName.replace(/\(.*?\)/g, '').replace(/\s*tickets?\s*$/i, '').trim();
-      if (full && !terms.includes(full)) terms.push(full);
+  /** StubHub event ID from a pasted StubHub event URL. */
+  const extractStubhubIdFromUrl = (url: string): string | null => {
+    const m = url.trim().match(/stubhub\.com\/[^?#]*\/event\/(\d{5,})/i);
+    return m ? m[1] : null;
+  };
+
+  const handleFetchStubhubId = async (event: TMEvent) => {
+    const pasted = extractStubhubIdFromUrl(imports[event.id]?.mappingId || '');
+    if (pasted) {
+      updateImportState(event.id, { mappingId: pasted, status: 'idle', error: undefined });
+      return;
     }
-    return [...new Set(terms)].filter(Boolean);
-  };
-
-  /** Fetch productions from Hermes API via our proxy */
-  const fetchProductions = async (performerId: number) => {
-    const res = await fetch(`/api/vividseats/proxy?path=productions&performerId=${performerId}`, {
-      cache: 'no-store',
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.items || data || [];
-  };
-
-  /** Fetch single production by ID via proxy */
-  const fetchProduction = async (productionId: number) => {
-    const res = await fetch(`/api/vividseats/proxy?path=productions/${productionId}`, {
-      cache: 'no-store',
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  };
-
-  /** Extract production ID from a Vivid Seats URL */
-  const extractVSProductionIdFromUrl = (url: string): number | null => {
+    setFetchingStubhubId(prev => ({ ...prev, [event.id]: true }));
+    updateImportState(event.id, { status: 'idle', error: undefined, stubhubCandidate: undefined, stubhubNote: undefined, stubhubSearchUrl: undefined });
     try {
-      const parsed = new URL(url);
-      if (!/vividseats\.com$/i.test(parsed.hostname)) return null;
-      const match = parsed.pathname.match(/\/(?:production|tickets)\/(\d+)/);
-      return match ? parseInt(match[1], 10) : null;
-    } catch { return null; }
-  };
-
-  interface MatchResult { match: VSProd | null; candidates: VSProd[] }
-
-  /** Match productions by date, venue, and time (runs entirely in the browser) */
-  const matchProduction = (productions: VSProd[], eventDate: string, venueName: string, localTime?: string): MatchResult => {
-    const targetDate = eventDate.slice(0, 10);
-    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    // Step 1: Exact date match
-    const dateMatches = productions.filter((p) => {
-      if (p.localDate?.slice(0, 10) === targetDate) return true;
-      if (p.utcDate) {
-        try { if (new Date(p.utcDate).toISOString().slice(0, 10) === targetDate) return true; } catch { /* skip */ }
-      }
-      return false;
-    });
-
-    if (dateMatches.length === 1) return { match: dateMatches[0], candidates: [] };
-
-    if (dateMatches.length > 1) {
-      // Step 2: Narrow by venue
-      const venueMatches = dateMatches.filter((p) =>
-        norm(p.venue?.name || '').includes(norm(venueName)) ||
-        norm(venueName).includes(norm(p.venue?.name || ''))
-      );
-      if (venueMatches.length === 1) return { match: venueMatches[0], candidates: [] };
-
-      // Step 3: Narrow by time (if VS localDate includes time component, e.g. "2024-03-15T19:30:00")
-      const pool = venueMatches.length > 1 ? venueMatches : dateMatches;
-      if (localTime) {
-        const targetHour = localTime.slice(0, 2);
-        const targetMin  = localTime.slice(3, 5);
-        const timeMatches = pool.filter((p) => {
-          const prodDate = p.localDate || '';
-          if (prodDate.length <= 10) return false;
-          return prodDate.slice(11, 13) === targetHour && prodDate.slice(14, 16) === targetMin;
-        });
-        if (timeMatches.length === 1) return { match: timeMatches[0], candidates: [] };
-        const hourMatches = pool.filter((p) => {
-          const prodDate = p.localDate || '';
-          return prodDate.length > 10 && prodDate.slice(11, 13) === targetHour;
-        });
-        if (hourMatches.length === 1) return { match: hourMatches[0], candidates: [] };
-      }
-
-      // Still ambiguous — surface candidates for user to choose
-      return { match: null, candidates: pool };
-    }
-
-    // Close date match (within 36h for timezone differences) — only when exactly 1 close match
-    const targetTime = new Date(eventDate).getTime();
-    const closeMatches = productions.filter((p) => {
-      const pDate = new Date(p.utcDate || p.localDate || '');
-      return Math.abs(pDate.getTime() - targetTime) < 36 * 60 * 60 * 1000;
-    });
-    if (closeMatches.length === 1) return { match: closeMatches[0], candidates: [] };
-    return { match: null, candidates: closeMatches.length > 1 ? closeMatches : [] };
-  };
-
-  const handleFetchVividId = async (event: TMEvent) => {
-    setFetchingVividId(prev => ({ ...prev, [event.id]: true }));
-    try {
-      // Check if user pasted a VS URL directly in the mapping field
-      const currentMappingVal = imports[event.id]?.mappingId || '';
-      const urlProductionId = extractVSProductionIdFromUrl(currentMappingVal);
-      if (urlProductionId) {
-        updateImportState(event.id, { mappingId: String(urlProductionId), status: 'idle', error: undefined });
-        return;
-      }
-
-      const searchTerms = extractSearchTerms(event.name);
-      // Also try the event URL as a VS URL (in case it's a VS link)
-      const eventUrlProdId = event.url ? extractVSProductionIdFromUrl(event.url) : null;
-      if (eventUrlProdId) {
-        const prod = await fetchProduction(eventUrlProdId);
-        if (prod?.id) {
-          updateImportState(event.id, { mappingId: String(prod.id), status: 'idle', error: undefined });
-          return;
-        }
-      }
-
-      if (searchTerms.length === 0) {
-        updateImportState(event.id, { status: 'idle', error: 'Could not extract search term from event name' });
-        return;
-      }
-
-      // Step 1: Find performer/production ID via server (search redirect — can't do client-side)
-      let performerId: number | null = null;
-      let directProductionId: number | null = null;
-      let usedTerm = '';
-
-      for (const term of searchTerms) {
-        const res = await fetch(`/api/vividseats/lookup?searchTerm=${encodeURIComponent(term)}`, { cache: 'no-store' });
-        const data = await res.json();
-        if (data.directProductionId) { directProductionId = data.directProductionId; usedTerm = term; break; }
-        if (data.performerId) { performerId = data.performerId; usedTerm = term; break; }
-      }
-
-      // Step 2: If direct production, fetch its details via proxy
-      if (directProductionId) {
-        const prod = await fetchProduction(directProductionId);
-        if (prod?.id) {
-          updateImportState(event.id, { mappingId: String(prod.id), status: 'idle', error: undefined });
-          return;
-        }
-      }
-
-      if (!performerId) {
-        const vsSearchUrl = `https://www.vividseats.com/search?searchTerm=${encodeURIComponent(usedTerm || searchTerms[0])}`;
-        updateImportState(event.id, {
-          status: 'idle',
-          error: `No performer found for "${usedTerm || searchTerms[0]}". Search manually`,
-          vividSearchUrl: vsSearchUrl,
-        });
-        return;
-      }
-
-      // Step 3: Fetch all productions for performer via proxy (browser → our proxy → VS API)
-      const productions = await fetchProductions(performerId);
-      if (productions.length === 0) {
-        updateImportState(event.id, {
-          status: 'idle',
-          error: 'Performer found but no upcoming events on Vivid Seats',
-          vividSearchUrl: `https://www.vividseats.com/search?searchTerm=${encodeURIComponent(usedTerm)}`,
-        });
-        return;
-      }
-
-      // Step 4: Match by date + venue + time (entirely client-side — no server call needed)
-      const eventDate = event.localDate || event.dateTime;
-      const { match, candidates } = matchProduction(productions, eventDate, event.venue, event.localTime);
-
-      if (match) {
-        updateImportState(event.id, { mappingId: String(match.id), status: 'idle', error: undefined, ambiguousProductions: undefined });
-      } else if (candidates.length > 0) {
-        // Multiple possible matches — let the user choose
-        updateImportState(event.id, {
-          status: 'idle',
-          error: undefined,
-          ambiguousProductions: candidates,
-          vividSearchUrl: `https://www.vividseats.com/search?searchTerm=${encodeURIComponent(usedTerm)}`,
-        });
+      const res = await fetch('/api/stubhub/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: event.name,
+          venue: event.venue,
+          city: event.venueCity,
+          state: event.venueState,
+          localDate: event.localDate || event.dateTime.slice(0, 10),
+          localTime: event.localTime,
+          tmUrl: event.url,
+        }),
+        signal: AbortSignal.timeout(130000),
+      });
+      const data = await res.json();
+      if (data.found && data.stubhubId) {
+        updateImportState(event.id, { mappingId: String(data.stubhubId), status: 'idle', error: undefined, stubhubNote: data.notes || undefined });
       } else {
         updateImportState(event.id, {
-          status: 'idle',
-          error: `Found ${productions.length} events but none match date ${eventDate.slice(0, 10)}`,
-          vividSearchUrl: `https://www.vividseats.com/search?searchTerm=${encodeURIComponent(usedTerm)}`,
+          status: 'error',
+          error: data.error || data.notes || 'No matching StubHub event found.',
+          stubhubCandidate: data.candidate || undefined,
+          stubhubSearchUrl: data.searchUrl || `https://www.stubhub.com/search?q=${encodeURIComponent(event.name)}`,
         });
       }
     } catch {
       updateImportState(event.id, {
-        status: 'idle',
-        error: 'Auto-fetch failed: Network error. Try searching manually',
-        vividSearchUrl: `https://www.vividseats.com/search?searchTerm=${encodeURIComponent(event.name)}`,
+        status: 'error',
+        error: 'StubHub lookup failed. Enter the StubHub ID by hand.',
+        stubhubSearchUrl: `https://www.stubhub.com/search?q=${encodeURIComponent(event.name)}`,
       });
     } finally {
-      setFetchingVividId(prev => ({ ...prev, [event.id]: false }));
+      setFetchingStubhubId(prev => ({ ...prev, [event.id]: false }));
     }
   };
 
   /* ---- Import ---- */
   const updateImportState = (eventId: string, update: Partial<ImportState>) => {
-    setImports(prev => ({ ...prev, [eventId]: { ...prev[eventId], ...update } as ImportState }));
+    // New cards start from the default markup so the first edit doesn't drop it.
+    setImports(prev => ({ ...prev, [eventId]: { mappingId: '', ...DEFAULT_MARKUP, status: 'idle', ...(prev[eventId] as Partial<ImportState> | undefined), ...update } as ImportState }));
   };
 
   const handleImport = async (event: TMEvent) => {
     const state = imports[event.id];
     const mappingId = state?.mappingId?.trim();
     if (!mappingId) {
-      updateImportState(event.id, { status: 'error', error: 'Mapping ID required' });
+      updateImportState(event.id, { status: 'error', error: 'StubHub ID required' });
       return;
     }
     const blockedStates = ['RI', 'ME'];
@@ -529,7 +367,7 @@ export default function ImportEventsClient({
     updateImportState(event.id, { status: 'importing', error: undefined });
     try {
       // Use the venue's local date/time from the TM Discovery API — this is what
-      // appears on the ticket and what Vivid Seats also uses.
+      // appears on the ticket and what StubHub also uses.
       const localDate = event.localDate || event.dateTime.slice(0, 10);
       const localTime = event.localTime || event.dateTime.slice(11, 19) || '00:00:00';
 
@@ -563,10 +401,10 @@ export default function ImportEventsClient({
         URL: finalUrl, Event_ID: urlEventId, Event_Name: event.name,
         Event_DateTime: eventDateTime, Venue: event.venue, Zone: 'none',
         Available_Seats: 0, Skip_Scraping: true, inHandDate: inHandDt.toISOString(),
-        mapping_id: mappingId, priceIncreasePercentage: imports[event.id]?.percentage ?? 30,
-        standardMarkupAdjustment: imports[event.id]?.standardAdj ?? 0,
-        resaleMarkupAdjustment: imports[event.id]?.resaleAdj ?? 0,
-        brokerMarkupAdjustment: imports[event.id]?.brokerAdj ?? 0,
+        mapping_id: mappingId, priceIncreasePercentage: imports[event.id]?.percentage ?? DEFAULT_MARKUP.percentage,
+        standardMarkupAdjustment: imports[event.id]?.standardAdj ?? DEFAULT_MARKUP.standardAdj,
+        resaleMarkupAdjustment: imports[event.id]?.resaleAdj ?? DEFAULT_MARKUP.resaleAdj,
+        brokerMarkupAdjustment: imports[event.id]?.brokerAdj ?? DEFAULT_MARKUP.brokerAdj,
       };
       const result = await createEvent(eventData as Parameters<typeof createEvent>[0]);
       if (result.error) throw new Error(result.error);
@@ -582,7 +420,7 @@ export default function ImportEventsClient({
   /* ---- Event Card ---- */
   const renderEventCard = (event: TMEvent, index: number) => {
     const listed = listedEvents[event.id];
-    const impState = imports[event.id] || { mappingId: '', percentage: 30, standardAdj: 0, resaleAdj: 0, brokerAdj: 0, status: 'idle' };
+    const impState = imports[event.id] || { mappingId: '', ...DEFAULT_MARKUP, status: 'idle' };
     const isImported = impState.status === 'success';
     const isImporting = impState.status === 'importing';
     const isListed = !!listed;
@@ -758,7 +596,7 @@ export default function ImportEventsClient({
           {isListed && (
             <div className="bg-purple-50 border border-purple-100 rounded-lg p-2.5 space-y-1.5">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-purple-700 font-medium">Vivid ID: <span className="font-mono">{listed.mappingId}</span></span>
+                <span className="text-purple-700 font-medium">StubHub ID: <span className="font-mono">{listed.mappingId}</span></span>
                 <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${listed.scrapingActive ? 'bg-emerald-100 text-emerald-700' : 'bg-red-50 text-red-500'}`}>
                   <span className={`w-1.5 h-1.5 rounded-full ${listed.scrapingActive ? 'bg-emerald-500 animate-pulse' : 'bg-red-400'}`} />
                   {listed.scrapingActive ? 'Live' : 'Paused'}
@@ -786,33 +624,39 @@ export default function ImportEventsClient({
                   <div className="flex gap-1.5">
                     <input
                       type="text"
-                      placeholder="Vivid ID or paste VS URL"
+                      placeholder="StubHub ID or paste StubHub URL"
                       value={impState.mappingId || ''}
                       onChange={e => {
                         let val = e.target.value;
-                        // Auto-extract production ID from pasted VS URLs
-                        const prodId = extractVSProductionIdFromUrl(val);
-                        if (prodId) val = String(prodId);
-                        updateImportState(event.id, { mappingId: val, status: 'idle', error: undefined });
+                        // Pasted StubHub event URL -> its event ID
+                        const id = extractStubhubIdFromUrl(val);
+                        if (id) val = id;
+                        updateImportState(event.id, { mappingId: val, status: 'idle', error: undefined, stubhubCandidate: undefined });
                       }}
                       disabled={isImporting}
-                      className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-50 transition-all"
+                      className="flex-1 min-w-0 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-50 transition-all"
                     />
                     <button
-                      onClick={() => handleFetchVividId(event)}
-                      disabled={isImporting || fetchingVividId[event.id]}
-                      title="Auto-fetch Vivid Seats ID"
+                      onClick={() => handleFetchStubhubId(event)}
+                      disabled={isImporting || fetchingStubhubId[event.id]}
+                      title="Search StubHub for this event and fill in its ID"
                       className="inline-flex items-center gap-1.5 px-3 py-2 border border-purple-200 rounded-lg text-purple-600 bg-purple-50 hover:bg-purple-100 hover:border-purple-300 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
                     >
-                      {fetchingVividId[event.id] ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                      {fetchingVividId[event.id] ? 'Fetching...' : 'Fetch Vivid ID'}
+                      {fetchingStubhubId[event.id] ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+                      {fetchingStubhubId[event.id] ? 'Searching StubHub…' : 'Fetch StubHub ID'}
                     </button>
                   </div>
+                  {fetchingStubhubId[event.id] && (
+                    <p className="text-[11px] text-purple-600">Searching StubHub for this date and venue. This can take up to a minute.</p>
+                  )}
+                  {!fetchingStubhubId[event.id] && impState.stubhubNote && impState.mappingId && (
+                    <p className="text-[11px] text-emerald-700 flex items-start gap-1"><Check className="w-3 h-3 shrink-0 mt-0.5" /> {impState.stubhubNote}</p>
+                  )}
                   <div>
                     <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Default Markup</p>
                     <div className="flex items-center gap-2">
                       <button type="button" aria-label="Decrease markup by 5%" disabled={isImporting}
-                        onClick={() => updateImportState(event.id, { percentage: Math.max(0, (impState.percentage ?? 30) - 5), status: 'idle', error: undefined })}
+                        onClick={() => updateImportState(event.id, { percentage: Math.max(0, (impState.percentage ?? DEFAULT_MARKUP.percentage) - 5), status: 'idle', error: undefined })}
                         className="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-40 transition-colors shrink-0">
                         <Minus className="w-3.5 h-3.5" />
                       </button>
@@ -822,7 +666,7 @@ export default function ImportEventsClient({
                           min={0}
                           max={999}
                           placeholder="30"
-                          value={impState.percentage ?? 30}
+                          value={impState.percentage ?? DEFAULT_MARKUP.percentage}
                           onChange={e => updateImportState(event.id, { percentage: Number(e.target.value) || 0, status: 'idle', error: undefined })}
                           disabled={isImporting}
                           className="w-full px-3 py-2 pr-8 text-center font-bold border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-50 transition-all [appearance:textfield]"
@@ -830,17 +674,17 @@ export default function ImportEventsClient({
                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 font-medium">%</span>
                       </div>
                       <button type="button" aria-label="Increase markup by 5%" disabled={isImporting}
-                        onClick={() => updateImportState(event.id, { percentage: Math.min(999, (impState.percentage ?? 30) + 5), status: 'idle', error: undefined })}
+                        onClick={() => updateImportState(event.id, { percentage: Math.min(999, (impState.percentage ?? DEFAULT_MARKUP.percentage) + 5), status: 'idle', error: undefined })}
                         className="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-40 transition-colors shrink-0">
                         <Plus className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>
                   <CsvAdjustments
-                    defaultPct={impState.percentage ?? 30}
-                    standardAdj={impState.standardAdj ?? 0}
-                    resaleAdj={impState.resaleAdj ?? 0}
-                    brokerAdj={impState.brokerAdj ?? 0}
+                    defaultPct={impState.percentage ?? DEFAULT_MARKUP.percentage}
+                    standardAdj={impState.standardAdj ?? DEFAULT_MARKUP.standardAdj}
+                    resaleAdj={impState.resaleAdj ?? DEFAULT_MARKUP.resaleAdj}
+                    brokerAdj={impState.brokerAdj ?? DEFAULT_MARKUP.brokerAdj}
                     onStandardChange={v => updateImportState(event.id, { standardAdj: v, status: 'idle', error: undefined })}
                     onResaleChange={v => updateImportState(event.id, { resaleAdj: v, status: 'idle', error: undefined })}
                     onBrokerChange={v => updateImportState(event.id, { brokerAdj: v, status: 'idle', error: undefined })}
@@ -851,69 +695,35 @@ export default function ImportEventsClient({
                     {isImporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Import className="w-3.5 h-3.5" />}
                     {isImporting ? 'Importing...' : 'Import Event'}
                   </button>
-                  {/* Ambiguous: multiple VS events on same date — let user pick */}
-                  {impState.ambiguousProductions && impState.ambiguousProductions.length > 0 && (
-                    <div className="border border-amber-200 rounded-lg bg-amber-50 p-2.5 space-y-1.5">
-                      <p className="text-[11px] font-semibold text-amber-700 flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3 shrink-0" />
-                        {impState.ambiguousProductions.length} events found on same date — select one:
-                      </p>
-                      <div className="space-y-1">
-                        {impState.ambiguousProductions.map((prod) => {
-                          const rawDate = prod.localDate || prod.utcDate || '';
-                          const dateStr = rawDate.length > 10
-                            ? rawDate.slice(0, 16).replace('T', ' ')
-                            : rawDate.slice(0, 10);
-                          const venueLine = [prod.venue?.name, prod.venue?.city, prod.venue?.state].filter(Boolean).join(', ');
-                          const vsUrl = prod.webPath
-                            ? `https://www.vividseats.com${prod.webPath}`
-                            : `https://www.vividseats.com/search?productionId=${prod.id}`;
-                          return (
-                            <div key={prod.id} className="flex items-center gap-2 bg-white border border-amber-100 rounded-md px-2.5 py-2">
-                              <div className="flex-1 min-w-0">
-                                {venueLine && <p className="text-xs font-semibold text-slate-700 truncate">{venueLine}</p>}
-                                {prod.name && <p className="text-[10px] text-slate-500 truncate">{prod.name}</p>}
-                                <p className="text-[10px] text-slate-400 font-mono">{dateStr} · ID {prod.id}</p>
-                              </div>
-                              <a href={vsUrl} target="_blank" rel="noopener noreferrer"
-                                className="p-1 text-blue-400 hover:text-blue-600 shrink-0" title="Open on Vivid Seats">
-                                <ExternalLink className="w-3 h-3" />
-                              </a>
-                              <button
-                                onClick={() => updateImportState(event.id, {
-                                  mappingId: String(prod.id),
-                                  status: 'idle',
-                                  error: undefined,
-                                  ambiguousProductions: undefined,
-                                })}
-                                className="text-[11px] font-semibold px-2.5 py-1 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors shrink-0"
-                              >
-                                Select
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {impState.vividSearchUrl && (
-                        <a href={impState.vividSearchUrl} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-600 underline underline-offset-2">
-                          <ExternalLink className="w-2.5 h-2.5" /> Search manually on Vivid Seats
-                        </a>
-                      )}
-                    </div>
-                  )}
-
                   {impState.status === 'error' && impState.error && (
-                    <div className="text-xs text-red-600 space-y-1">
-                      <p className="flex items-start gap-1"><X className="w-3 h-3 shrink-0 mt-0.5" /> {impState.error.replace(/\. Search manually on VividSeats$/, '')}</p>
-                      {impState.vividSearchUrl && (
+                    <div className="text-xs text-red-600 space-y-1.5">
+                      <p className="flex items-start gap-1"><X className="w-3 h-3 shrink-0 mt-0.5" /> {impState.error}</p>
+                      {impState.stubhubCandidate && (
+                        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-semibold text-amber-800 truncate">{impState.stubhubCandidate.name || 'Possible match'}</p>
+                            <p className="text-[10px] text-amber-700 font-mono">StubHub ID {impState.stubhubCandidate.id}</p>
+                          </div>
+                          <a href={impState.stubhubCandidate.url} target="_blank" rel="noopener noreferrer"
+                            className="p-1 text-blue-500 hover:text-blue-700 shrink-0" title="Open on StubHub">
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                          <button
+                            onClick={() => updateImportState(event.id, { mappingId: impState.stubhubCandidate!.id, status: 'idle', error: undefined, stubhubCandidate: undefined })}
+                            className="text-[11px] font-semibold px-2.5 py-1 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors shrink-0"
+                          >
+                            Use it
+                          </button>
+                        </div>
+                      )}
+                      {impState.stubhubSearchUrl && (
                         <a
-                          href={impState.vividSearchUrl}
+                          href={impState.stubhubSearchUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-600 hover:text-purple-800 underline underline-offset-2"
                         >
-                          <ExternalLink className="w-3 h-3" /> Search on Vivid Seats manually
+                          <ExternalLink className="w-3 h-3" /> Search StubHub manually
                         </a>
                       )}
                     </div>
@@ -932,7 +742,7 @@ export default function ImportEventsClient({
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-slate-800">Import Events</h1>
-        <p className="text-sm text-slate-500 mt-1">Search Ticketmaster &amp; import US events with Vivid Seats mapping</p>
+        <p className="text-sm text-slate-500 mt-1">Search Ticketmaster &amp; import US events with StubHub mapping</p>
       </div>
 
       {/* Search Bar */}

@@ -1,6 +1,7 @@
 'use client';
 import React, { createContext, useContext, useState, ReactNode } from 'react';
 import { EVENT_TYPES, isValidEventType, type EventType } from '@/lib/venueToSport';
+import { DEFAULT_MARKUP } from '@/lib/markupDefaults';
 
 // Define explicit form states instead of multiple boolean flags
 type FormState = 'idle' | 'submitting' | 'success' | 'error';
@@ -146,10 +147,10 @@ export function EventFormProvider({ children, initialData }: {
       Skip_Scraping: { value: initialData?.Skip_Scraping !== undefined ? initialData.Skip_Scraping : true, status: 'untouched' },
       inHandDate: { value: formatDateForInput(initialData?.inHandDate), status: 'untouched' },
       mapping_id: { value: initialData?.mapping_id || "", status: 'untouched' },
-      Percentage_Increase_ListCost: { value: initialData?.priceIncreasePercentage || 0, status: 'untouched' },
-      standardMarkupAdjustment: { value: initialData?.standardMarkupAdjustment ?? 0, status: 'untouched' },
-      resaleMarkupAdjustment: { value: initialData?.resaleMarkupAdjustment ?? 0, status: 'untouched' },
-      brokerMarkupAdjustment: { value: initialData?.brokerMarkupAdjustment ?? 0, status: 'untouched' },
+      Percentage_Increase_ListCost: { value: initialData ? (initialData.priceIncreasePercentage || 0) : DEFAULT_MARKUP.percentage, status: 'untouched' },
+      standardMarkupAdjustment: { value: initialData ? (initialData.standardMarkupAdjustment ?? 0) : DEFAULT_MARKUP.standardAdj, status: 'untouched' },
+      resaleMarkupAdjustment: { value: initialData ? (initialData.resaleMarkupAdjustment ?? 0) : DEFAULT_MARKUP.resaleAdj, status: 'untouched' },
+      brokerMarkupAdjustment: { value: initialData ? (initialData.brokerMarkupAdjustment ?? 0) : DEFAULT_MARKUP.brokerAdj, status: 'untouched' },
       eventType: { value: initialData?.eventType ?? "", status: 'untouched' },
     };
   };
