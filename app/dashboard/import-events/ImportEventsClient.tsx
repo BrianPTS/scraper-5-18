@@ -3,12 +3,13 @@
 import React, { useState, useCallback, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createEvent } from '@/actions/eventActions';
+import CsvAdjustments from '@/components/ui/CsvAdjustments';
 import Image from 'next/image';
 import {
   Search, Import, Calendar, MapPin, ChevronLeft, ChevronRight,
   Loader2, Check, X, ExternalLink, DollarSign, Flame,
   Package, RefreshCw, ChevronDown, ChevronUp, Shield, Ticket,
-  Users, Music, AlertTriangle, Twitter, Instagram, Globe, Wand2,
+  Users, Music, AlertTriangle, Twitter, Instagram, Globe, Wand2, Minus, Plus,
 } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
@@ -81,6 +82,8 @@ interface VSProd {
 interface ImportState {
   mappingId: string;
   percentage: number;
+  standardAdj: number;
+  resaleAdj: number;
   brokerAdj: number;
   status: 'idle' | 'importing' | 'success' | 'error';
   error?: string;
@@ -561,7 +564,8 @@ export default function ImportEventsClient({
         Event_DateTime: eventDateTime, Venue: event.venue, Zone: 'none',
         Available_Seats: 0, Skip_Scraping: true, inHandDate: inHandDt.toISOString(),
         mapping_id: mappingId, priceIncreasePercentage: imports[event.id]?.percentage ?? 30,
-        standardMarkupAdjustment: 0, resaleMarkupAdjustment: 0,
+        standardMarkupAdjustment: imports[event.id]?.standardAdj ?? 0,
+        resaleMarkupAdjustment: imports[event.id]?.resaleAdj ?? 0,
         brokerMarkupAdjustment: imports[event.id]?.brokerAdj ?? 0,
       };
       const result = await createEvent(eventData as Parameters<typeof createEvent>[0]);
@@ -578,7 +582,7 @@ export default function ImportEventsClient({
   /* ---- Event Card ---- */
   const renderEventCard = (event: TMEvent, index: number) => {
     const listed = listedEvents[event.id];
-    const impState = imports[event.id] || { mappingId: '', percentage: 30, brokerAdj: 0, status: 'idle' };
+    const impState = imports[event.id] || { mappingId: '', percentage: 30, standardAdj: 0, resaleAdj: 0, brokerAdj: 0, status: 'idle' };
     const isImported = impState.status === 'success';
     const isImporting = impState.status === 'importing';
     const isListed = !!listed;
@@ -804,38 +808,44 @@ export default function ImportEventsClient({
                       {fetchingVividId[event.id] ? 'Fetching...' : 'Fetch Vivid ID'}
                     </button>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <input
-                        type="number"
-                        min={0}
-                        max={999}
-                        placeholder="30"
-                        value={impState.percentage ?? 30}
-                        onChange={e => updateImportState(event.id, { percentage: Number(e.target.value) || 0, status: 'idle', error: undefined })}
-                        disabled={isImporting}
-                        className="w-full px-3 py-2 pr-8 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-50 transition-all"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 font-medium">%</span>
+                  <div>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Default Markup</p>
+                    <div className="flex items-center gap-2">
+                      <button type="button" aria-label="Decrease markup by 5%" disabled={isImporting}
+                        onClick={() => updateImportState(event.id, { percentage: Math.max(0, (impState.percentage ?? 30) - 5), status: 'idle', error: undefined })}
+                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-40 transition-colors shrink-0">
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <div className="relative flex-1">
+                        <input
+                          type="number"
+                          min={0}
+                          max={999}
+                          placeholder="30"
+                          value={impState.percentage ?? 30}
+                          onChange={e => updateImportState(event.id, { percentage: Number(e.target.value) || 0, status: 'idle', error: undefined })}
+                          disabled={isImporting}
+                          className="w-full px-3 py-2 pr-8 text-center font-bold border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-50 transition-all [appearance:textfield]"
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 font-medium">%</span>
+                      </div>
+                      <button type="button" aria-label="Increase markup by 5%" disabled={isImporting}
+                        onClick={() => updateImportState(event.id, { percentage: Math.min(999, (impState.percentage ?? 30) + 5), status: 'idle', error: undefined })}
+                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-40 transition-colors shrink-0">
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
                     </div>
-                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">Markup</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <input
-                        type="number"
-                        min={-100}
-                        max={500}
-                        placeholder="0"
-                        value={impState.brokerAdj ?? 0}
-                        onChange={e => updateImportState(event.id, { brokerAdj: Number(e.target.value) || 0, status: 'idle', error: undefined })}
-                        disabled={isImporting}
-                        className="w-full px-3 py-2 pr-8 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent disabled:bg-slate-50 transition-all"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 font-medium">%</span>
-                    </div>
-                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">Broker adj</span>
-                  </div>
+                  <CsvAdjustments
+                    defaultPct={impState.percentage ?? 30}
+                    standardAdj={impState.standardAdj ?? 0}
+                    resaleAdj={impState.resaleAdj ?? 0}
+                    brokerAdj={impState.brokerAdj ?? 0}
+                    onStandardChange={v => updateImportState(event.id, { standardAdj: v, status: 'idle', error: undefined })}
+                    onResaleChange={v => updateImportState(event.id, { resaleAdj: v, status: 'idle', error: undefined })}
+                    onBrokerChange={v => updateImportState(event.id, { brokerAdj: v, status: 'idle', error: undefined })}
+                    disabled={isImporting}
+                  />
                   <button onClick={() => handleImport(event)} disabled={isImporting}
                     className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-medium rounded-lg hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 transition-all shadow-sm shadow-purple-200">
                     {isImporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Import className="w-3.5 h-3.5" />}

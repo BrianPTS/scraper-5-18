@@ -4,6 +4,7 @@ import React, { useState, useTransition, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { TrendingUp, Check, Minus, Plus } from 'lucide-react';
 import { updateEvent } from '@/actions/eventActions';
+import CsvAdjustments from '@/components/ui/CsvAdjustments';
 
 interface Props {
   eventId: string;
@@ -15,52 +16,6 @@ interface Props {
 
 const PRESETS = [0, 5, 10, 15, 20, 25, 30, 40, 50];
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
-
-function AdjRow({
-  label,
-  adj,
-  defaultPct,
-  onChange,
-  disabled,
-}: {
-  label: string;
-  adj: number;
-  defaultPct: number;
-  onChange: (v: number) => void;
-  disabled?: boolean;
-}) {
-  const effective = defaultPct + adj;
-  const adjColor = adj > 0 ? 'text-red-600 font-bold' : adj < 0 ? 'text-blue-600 font-bold' : 'text-slate-400';
-  const effColor = effective > 0 ? 'text-red-600' : effective < 0 ? 'text-blue-600' : 'text-slate-500';
-  return (
-    <div className="flex items-center justify-between gap-3 py-2">
-      <div className="min-w-0">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</p>
-        <p className="text-[11px] text-slate-400">Effective: <span className={effColor}>{effective > 0 ? '+' : ''}{effective}%</span></p>
-      </div>
-      <div className="flex items-center gap-1.5 shrink-0">
-        <button type="button" onClick={() => onChange(adj - 1)} disabled={disabled}
-          className="w-7 h-7 flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-40 transition-colors">
-          <Minus size={12} />
-        </button>
-        <input
-          type="number"
-          value={adj}
-          onChange={e => onChange(Number(e.target.value))}
-          disabled={disabled}
-          className="w-14 text-center border border-slate-200 rounded-md py-1 text-sm font-bold focus:ring-2 focus:ring-blue-500 focus:border-blue-400 outline-none [appearance:textfield]"
-        />
-        <button type="button" onClick={() => onChange(adj + 1)} disabled={disabled}
-          className="w-7 h-7 flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-40 transition-colors">
-          <Plus size={12} />
-        </button>
-        <span className={`text-xs font-semibold w-8 text-right ${adjColor}`}>
-          {adj > 0 ? '+' : ''}{adj}%
-        </span>
-      </div>
-    </div>
-  );
-}
 
 export default function PriceEditor({ eventId, initialPct, initialStandardAdj = 0, initialResaleAdj = 0, initialBrokerAdj = 0 }: Props) {
   const router = useRouter();
@@ -186,46 +141,16 @@ export default function PriceEditor({ eventId, initialPct, initialStandardAdj = 
         </div>
 
         {/* --- CSV Adjustments --- */}
-        <div className="bg-gray-50 rounded-xl p-3.5 space-y-0.5">
-          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">
-            CSV Adjustments
-          </p>
-          <AdjRow
-            label="Standard"
-            adj={stdAdj}
-            defaultPct={value}
-            onChange={(v) => {
-              setStdAdj(v);
-              setSaveState("idle");
-            }}
-            disabled={isPending}
-          />
-          <div className="h-px bg-gray-200 my-1" />
-          <AdjRow
-            label="Resale (Fan)"
-            adj={resaleAdj}
-            defaultPct={value}
-            onChange={(v) => {
-              setResaleAdj(v);
-              setSaveState("idle");
-            }}
-            disabled={isPending}
-          />
-          <div className="h-px bg-gray-200 my-1" />
-          <AdjRow
-            label="Broker"
-            adj={brokerAdj}
-            defaultPct={value}
-            onChange={(v) => {
-              setBrokerAdj(v);
-              setSaveState("idle");
-            }}
-            disabled={isPending}
-          />
-          <p className="text-[10px] text-gray-400 mt-1 leading-tight">
-            Broker = listings tagged &ldquo;resale broker&rdquo; by scraper. If 0, falls back to Resale %.
-          </p>
-        </div>
+        <CsvAdjustments
+          defaultPct={value}
+          standardAdj={stdAdj}
+          resaleAdj={resaleAdj}
+          brokerAdj={brokerAdj}
+          onStandardChange={(v) => { setStdAdj(v); setSaveState("idle"); }}
+          onResaleChange={(v) => { setResaleAdj(v); setSaveState("idle"); }}
+          onBrokerChange={(v) => { setBrokerAdj(v); setSaveState("idle"); }}
+          disabled={isPending}
+        />
 
         {/* Save button */}
         <button
